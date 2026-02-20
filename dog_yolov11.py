@@ -42,6 +42,63 @@ def xyxy_to_coco(box: Sequence[float]) -> List[int]:
     ]
 
 
+def box_iou_xyxy(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
+    """
+    IoU for boxes in xyxy format.
+    boxes1: [N,4], boxes2: [M,4]
+    return: [N,M]
+    """
+    if boxes1.numel() == 0 or boxes2.numel() == 0:
+        return torch.zeros(
+            (boxes1.shape[0], boxes2.shape[0]), dtype=boxes1.dtype, device=boxes1.device
+        )
+
+    tl = torch.maximum(boxes1[:, None, :2], boxes2[None, :, :2])
+    br = torch.minimum(boxes1[:, None, 2:], boxes2[None, :, 2:])
+    wh = (br - tl).clamp(min=0)
+    inter = wh[..., 0] * wh[..., 1]
+
+    area1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=0) * (
+        boxes1[:, 3] - boxes1[:, 1]
+    ).clamp(min=0)
+    area2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=0) * (
+        boxes2[:, 3] - boxes2[:, 1]
+    ).clamp(min=0)
+    union = area1[:, None] + area2[None, :] - inter + 1e-6
+    return inter / union
+
+
+def nms_keep_indices(
+    boxes: torch.Tensor, scores: torch.Tensor, iou_thres: float = 0.5
+) -> torch.Tensor:
+    """
+    Pure torch NMS.
+    boxes: [N,4] xyxy, scores: [N]
+    return: kept indices over original N.
+    """
+    if boxes.numel() == 0:
+        return torch.zeros((0,), dtype=torch.long, device=boxes.device)
+
+    order = torch.argsort(scores, descending=True)
+    keep: List[torch.Tensor] = []
+
+    while order.numel() > 0:
+        i = order[0]
+        keep.append(i)
+
+        if order.numel() == 1:
+            break
+
+        rest = order[1:]
+        ious = box_iou_xyxy(boxes[i].unsqueeze(0), boxes[rest]).squeeze(0)
+        rest = rest[ious <= iou_thres]
+        order = rest
+
+    if len(keep) == 0:
+        return torch.zeros((0,), dtype=torch.long, device=boxes.device)
+    return torch.stack(keep)
+
+
 class Conv(nn.Module):
     def __init__(self, c1, c2, k=3, s=1, g=1):
         super().__init__()
@@ -92,7 +149,7 @@ class SPPF(nn.Module):
 
 
 class YOLOv11NanoBackbone(nn.Module):
-    def __init__(self, width_mult=0.25):
+    def __init__(self, width_mult=0.23):
         super().__init__()
         base = int(64 * width_mult)
 
@@ -155,7 +212,7 @@ class DetectHead(nn.Module):
 
 class DogYOLOv11(nn.Module):
     def __init__(
-        self, num_breeds=120, num_emotions=5, num_actions=5, width_mult=0.25
+        self, num_breeds=120, num_emotions=5, num_actions=5, width_mult=0.23
     ):
         super().__init__()
 
@@ -255,7 +312,14 @@ class DogYOLOLoss(nn.Module):
                         (len(body_boxes),), dtype=torch.bool, device=device
                     )
 
-                for i in range(len(body_boxes)):
+                # If multiple objects fall into the same grid cell, keep one target per cell.
+                # Sort by smaller area first to avoid losing tiny dogs near larger ones.
+                areas = (body_boxes[:, 2] - body_boxes[:, 0]).clamp(min=0) * (
+                    body_boxes[:, 3] - body_boxes[:, 1]
+                ).clamp(min=0)
+                obj_indices = torch.argsort(areas).tolist()
+
+                for i in obj_indices:
                     x1, y1, x2, y2 = body_boxes[i]
                     # Backward compatibility: if coords are normalized, convert to pixels.
                     if torch.max(body_boxes[i]) <= 1.5:
@@ -276,6 +340,8 @@ class DogYOLOLoss(nn.Module):
                     gy = int(cy / stride_y)
 
                     if gx < 0 or gy < 0 or gx >= W or gy >= H:
+                        continue
+                    if obj_target[b, gy, gx].item() > 0.5:
                         continue
 
                     obj_target[b, gy, gx] = 1.0
@@ -451,7 +517,11 @@ def decode_dog_predictions(
     breed_names: Sequence[str],
     emotion_names: Sequence[str],
     action_names: Sequence[str],
+    obj_thres: float = 0.05,
     conf_thres: float = 0.25,
+    iou_thres: float = 0.50,
+    apply_nms: bool = True,
+    class_agnostic: bool = False,
     max_det: int = 300,
 ) -> List[List[Dict[str, Any]]]:
     """
@@ -460,7 +530,7 @@ def decode_dog_predictions(
     """
     img_h, img_w = parse_image_size(image_size)
     batch = preds[0].shape[0]
-    results: List[List[Tuple[float, Dict[str, Any]]]] = [[] for _ in range(batch)]
+    results: List[List[Tuple[float, int, List[float], Dict[str, Any]]]] = [[] for _ in range(batch)]
 
     num_breeds = len(breed_names)
     num_emotions = len(emotion_names)
@@ -484,9 +554,9 @@ def decode_dog_predictions(
         act_logits = pred[..., off : off + num_actions]
 
         for b in range(B):
-            ys, xs = torch.where(obj[b] >= conf_thres)
+            ys, xs = torch.where(obj[b] >= obj_thres)
             for gy, gx in zip(ys.tolist(), xs.tolist()):
-                score = float(obj[b, gy, gx].item())
+                obj_score = float(obj[b, gy, gx].item())
 
                 cx = (gx + float(body_xy[b, gy, gx, 0].item())) * stride_x
                 cy = (gy + float(body_xy[b, gy, gx, 1].item())) * stride_y
@@ -510,7 +580,14 @@ def decode_dog_predictions(
                 else:
                     head_xyxy = [hx1, hy1, hx2, hy2]
 
-                breed_idx = int(torch.argmax(breed_logits[b, gy, gx]).item())
+                breed_probs = torch.softmax(breed_logits[b, gy, gx], dim=0)
+                breed_conf, breed_idx_t = torch.max(breed_probs, dim=0)
+                breed_idx = int(breed_idx_t.item())
+                cls_score = float(breed_conf.item())
+                score = obj_score * cls_score
+                if score < conf_thres:
+                    continue
+
                 emo_idx = int(torch.argmax(emo_logits[b, gy, gx]).item())
                 act_idx = int(torch.argmax(act_logits[b, gy, gx]).item())
 
@@ -539,11 +616,69 @@ def decode_dog_predictions(
                     if act_idx < len(action_names)
                     else f"action_{act_idx}",
                     "confidence": round(score, 6),
+                    "objectness": round(obj_score, 6),
+                    "breed_confidence": round(cls_score, 6),
                 }
-                results[b].append((score, record))
+                results[b].append((score, breed_idx, [x1, y1, x2, y2], record))
 
     out: List[List[Dict[str, Any]]] = []
     for per_img in results:
+        if len(per_img) == 0:
+            out.append([])
+            continue
+
+        if apply_nms:
+            boxes = torch.tensor([x[2] for x in per_img], dtype=torch.float32)
+            scores = torch.tensor([x[0] for x in per_img], dtype=torch.float32)
+            class_ids = torch.tensor([x[1] for x in per_img], dtype=torch.long)
+
+            if class_agnostic:
+                keep = nms_keep_indices(boxes, scores, iou_thres=iou_thres)
+            else:
+                keep_parts: List[torch.Tensor] = []
+                for cls in class_ids.unique():
+                    cls_idx = torch.where(class_ids == cls)[0]
+                    cls_keep = nms_keep_indices(
+                        boxes[cls_idx], scores[cls_idx], iou_thres=iou_thres
+                    )
+                    keep_parts.append(cls_idx[cls_keep])
+                if len(keep_parts) == 0:
+                    keep = torch.zeros((0,), dtype=torch.long)
+                else:
+                    keep = torch.cat(keep_parts, dim=0)
+
+            per_img = [per_img[i] for i in keep.tolist()]
+
         per_img = sorted(per_img, key=lambda x: x[0], reverse=True)[:max_det]
-        out.append([rec for _, rec in per_img])
+        out.append([rec for _, _, _, rec in per_img])
     return out
+
+
+def count_parameters(model: nn.Module, trainable_only: bool = False) -> int:
+    if trainable_only:
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return sum(p.numel() for p in model.parameters())
+
+
+def model_size_report(
+    num_breeds: int = 120,
+    num_emotions: int = 5,
+    num_actions: int = 5,
+    width_mult: float = 0.23,
+) -> Dict[str, Any]:
+    model = DogYOLOv11(
+        num_breeds=num_breeds,
+        num_emotions=num_emotions,
+        num_actions=num_actions,
+        width_mult=width_mult,
+    )
+    total = count_parameters(model, trainable_only=False)
+    trainable = count_parameters(model, trainable_only=True)
+    return {
+        "width_mult": width_mult,
+        "num_breeds": num_breeds,
+        "num_emotions": num_emotions,
+        "num_actions": num_actions,
+        "total_params": total,
+        "trainable_params": trainable,
+    }

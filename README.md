@@ -18,12 +18,14 @@ YOLO를 처음 커스텀하는 분을 위한, 강아지 전용 모델 베이스 
 
 - 데이터셋 링크: [Stanford Dogs](http://vision.stanford.edu/aditya86/ImageNetDogs/)
 - 모델 초기값: `num_breeds=120` (`dog_yolov11.py`)
+- 기본 경량 설정: `width_mult=0.23` (약 1.45M params 목표)
 
 ### 현재 코드의 범위
 현재 저장소는 **모델 코어와 변환 유틸 중심**입니다.
 
 - 있음: 모델/로스/JSON 변환/디코더
-- 아직 없음: `train.py`, `val.py`, 데이터셋 클래스, NMS 후처리
+- 아직 없음: `train.py`, `val.py`, 데이터셋 클래스
+- 포함됨: 기본 NMS 후처리(`decode_dog_predictions()` 옵션)
 
 로드맵은 이슈에서 관리 중입니다.
 
@@ -34,6 +36,7 @@ YOLO를 처음 커스텀하는 분을 위한, 강아지 전용 모델 베이스 
 ```text
 .
 ├── dog_yolov11.py                      # 모델, 로스, JSON 변환/디코더
+├── smoke_test.py                       # 파라미터/forward/loss/decode 검증
 ├── docs/adr/0001-dog-yolov11-json-contract.md
 └── README.md
 ```
@@ -81,6 +84,7 @@ pip install torch torchvision
 - `DogYOLOv11`
   - 출력: stride 8/16/32 3개 스케일
   - 한 셀당 예측: `obj + body(4) + head(4) + breed + emotion + action`
+  - 기본 `width_mult=0.23`로 1.5M 미만 파라미터를 목표로 함
 
 - `DogYOLOLoss`
   - 픽셀 좌표 박스를 그리드 타깃으로 변환
@@ -92,6 +96,11 @@ pip install torch torchvision
 
 - `decode_dog_predictions()`
   - 모델 raw output을 다시 JSON 계약 포맷으로 변환
+  - 기본 NMS 지원 (`apply_nms`, `iou_thres`, `class_agnostic`)
+  - 점수 계산: `objectness * breed_confidence`
+
+- `model_size_report()`
+  - 현재 설정의 파라미터 수를 확인하는 유틸
 
 ## 6) 스모크 테스트
 
@@ -99,66 +108,27 @@ pip install torch torchvision
 
 - 모델 forward
 - loss 계산
+- backward
 - 디코딩 결과(JSON 형태) 생성
+- 파라미터 수 출력
 
 ```bash
 cd /Users/jipibe.j/Documents/insta-crawl
-python - <<'PY'
-import torch
-from dog_yolov11 import DogYOLOv11, DogYOLOLoss, annotations_to_target, decode_dog_predictions
-
-print("torch:", torch.__version__)
-device = "mps" if torch.backends.mps.is_available() else "cpu"
-print("device:", device)
-
-annotations = [
-    {"label":"Border Collie","bodybndbox":[366,750,503,911],"headbndbox":[403,750,462,820],"emotional":"excited","action":"running"},
-    {"label":"Poodle","bodybndbox":[662,794,756,915],"headbndbox":[662,811,702,860],"emotional":"curious","action":"standing"},
-    {"label":"Unknown","bodybndbox":[177,648,230,701],"headbndbox":[0,0,0,0],"emotional":"calm","action":"resting"},
-]
-
-breed_to_idx = {"Border Collie":0, "Poodle":1}
-emotion_to_idx = {"excited":0, "curious":1, "calm":2, "resting":3}
-action_to_idx = {"running":0, "standing":1, "resting":2}
-
-target = annotations_to_target(
-    annotations,
-    breed_to_idx=breed_to_idx,
-    emotion_to_idx=emotion_to_idx,
-    action_to_idx=action_to_idx,
-    unknown_breed_policy="ignore"  # Unknown을 분류 loss에서 제외
-)
-
-model = DogYOLOv11(num_breeds=2, num_emotions=4, num_actions=3).to(device)
-loss_fn = DogYOLOLoss(num_breeds=2, num_emotions=4, num_actions=3).to(device)
-
-x = torch.randn(1, 3, 1024, 768, device=device)
-preds = model(x)
-loss = loss_fn(preds, [target], img_size=(1024, 768))
-
-decoded = decode_dog_predictions(
-    preds,
-    image_size=(1024, 768),
-    breed_names=["Border Collie", "Poodle"],
-    emotion_names=["excited", "curious", "calm", "resting"],
-    action_names=["running", "standing", "resting"],
-    conf_thres=0.95,
-    max_det=5
-)
-
-print("pred_shapes:", [tuple(p.shape) for p in preds])
-print("loss:", float(loss))
-print("decoded_count:", len(decoded[0]))
-if decoded[0]:
-    print("sample:", decoded[0][0])
-PY
+python smoke_test.py
 ```
 
 정상이라면:
 
 - `pred_shapes`가 3개 스케일로 출력
 - `loss`가 숫자로 출력
+- `backward: ok` 출력
 - `decoded_count`가 0 이상으로 출력
+
+원하는 설정으로 테스트:
+
+```bash
+python smoke_test.py --num-breeds 120 --num-emotions 5 --num-actions 5 --width-mult 0.23
+```
 
 ## 7) 120 견종으로 확장하는 방법
 
@@ -175,7 +145,7 @@ PY
 breed_names = [...]  # 길이 120, 순서 고정
 breed_to_idx = {name: i for i, name in enumerate(breed_names)}
 
-model = DogYOLOv11(num_breeds=120, num_emotions=5, num_actions=5)
+model = DogYOLOv11(num_breeds=120, num_emotions=5, num_actions=5, width_mult=0.23)
 loss_fn = DogYOLOLoss(num_breeds=120, num_emotions=5, num_actions=5)
 ```
 
