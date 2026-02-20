@@ -31,7 +31,8 @@
 ## 2) 설치
 
 ```bash
-cd /Users/jipibe.j/Documents/insta-crawl
+git clone https://github.com/stupidcoderJung/dog-yolov11-k9-json.git
+cd dog-yolov11-k9-json
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip

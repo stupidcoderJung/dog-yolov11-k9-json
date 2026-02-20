@@ -47,9 +47,11 @@ def infer_class_names(
     breed_names = load_class_names(breed_file)
     emotion_names = load_class_names(emotion_file)
     action_names = load_class_names(action_file)
+    breed_from_checkpoint = False
 
     if not breed_names and checkpoint_dict.get("breed_names"):
         breed_names = list(checkpoint_dict["breed_names"])
+        breed_from_checkpoint = True
     if not emotion_names and checkpoint_dict.get("emotion_names"):
         emotion_names = list(checkpoint_dict["emotion_names"])
     if not action_names and checkpoint_dict.get("action_names"):
@@ -62,7 +64,12 @@ def infer_class_names(
     if not action_names:
         action_names = collect_unique_values(dataset.samples, "action")
 
-    if unknown_breed_policy == "class" and "Unknown" not in breed_names:
+    # Keep checkpoint class layout unchanged to avoid head shape mismatch on strict load.
+    if (
+        unknown_breed_policy == "class"
+        and "Unknown" not in breed_names
+        and not breed_from_checkpoint
+    ):
         breed_names.append("Unknown")
 
     if len(breed_names) == 0:
