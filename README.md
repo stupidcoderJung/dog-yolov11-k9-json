@@ -1,182 +1,210 @@
-# DogYOLOv11 K9 JSON (초보자용 가이드)
+# DogYOLOv11 K9 JSON
 
-YOLO를 처음 커스텀하는 분을 위한, 강아지 전용 모델 베이스 코드입니다.
+강아지 탐지/속성 분류를 위한 경량 YOLO 커스텀 프로젝트입니다.
 
-이 저장소는 다음 목표를 가집니다.
-
-- 한 이미지에서 여러 마리 강아지 탐지
-- `label=견종` 분류
-- `headbndbox` 예측
-- `emotional`, `action` 분류
-- 학습/추론 모두 동일한 JSON 포맷 사용
-
-## 1) 이 프로젝트에서 중요한 전제
-
-### `label`의 의미
-`label`은 견종입니다.  
-현재 설계는 **Stanford Dogs 120종** 사용을 전제로 합니다.
-
-- 데이터셋 링크: [Stanford Dogs](http://vision.stanford.edu/aditya86/ImageNetDogs/)
-- 모델 초기값: `num_breeds=120` (`dog_yolov11.py`)
-- 기본 경량 설정: `width_mult=0.23` (약 1.45M params 목표)
-
-### 현재 코드의 범위
-현재 저장소는 **모델 코어와 변환 유틸 중심**입니다.
-
-- 있음: 모델/로스/JSON 변환/디코더
-- 아직 없음: `train.py`, `val.py`, 데이터셋 클래스
-- 포함됨: 기본 NMS 후처리(`decode_dog_predictions()` 옵션)
-
-로드맵은 이슈에서 관리 중입니다.
-
-- 로드맵: [#1](https://github.com/stupidcoderJung/dog-yolov11-k9-json/issues/1)
-
-## 2) 폴더 구조
-
-```text
-.
-├── dog_yolov11.py                      # 모델, 로스, JSON 변환/디코더
-├── smoke_test.py                       # 파라미터/forward/loss/decode 검증
-├── docs/adr/0001-dog-yolov11-json-contract.md
-└── README.md
-```
-
-## 3) JSON 어노테이션 계약
-
-입력/출력 공통으로 아래 키를 씁니다.
+이 저장소는 아래 JSON 계약을 기준으로 동작합니다.
 
 - `label` (견종)
-- `bodybndbox` (`[x1, y1, x2, y2]`)
-- `bodybndbox_coco` (`[x, y, w, h]`)
-- `headbndbox` (`[x1, y1, x2, y2]`, 없으면 `[0,0,0,0]`)
-- `headbndbox_coco` (`[x, y, w, h]`)
+- `bodybndbox` / `bodybndbox_coco`
+- `headbndbox` / `headbndbox_coco`
 - `emotional`
 - `action`
 
-예시:
+기본 목표:
 
-```json
-{
-  "label": "Border Collie",
-  "bodybndbox": [366, 750, 503, 911],
-  "bodybndbox_coco": [366, 750, 137, 161],
-  "headbndbox": [403, 750, 462, 820],
-  "headbndbox_coco": [403, 750, 59, 70],
-  "emotional": "excited",
-  "action": "running"
-}
-```
+- 한 이미지에서 여러 마리 강아지 탐지
+- `label=견종` 분류 (Stanford Dogs 120종 확장 가능)
+- `headbndbox` + 감정/행동 분류
+- 학습/추론 출력을 같은 JSON 형태로 유지
 
-## 4) 설치
+## 1) 현재 포함 기능
+
+- 모델/로스: `dog_yolov11.py`
+- 디코더 + NMS: `decode_dog_predictions(...)`
+- 데이터셋 로더: `dataset.py` (`DogJsonDataset`, `dog_collate_fn`)
+- 라벨 검증기: `label_validator.py`
+- 학습 스크립트: `train.py`
+- 검증/추론 스크립트: `val.py`
+- 빠른 스모크: `smoke_test.py`
+- CI 스모크 테스트: `.github/workflows/smoke-test.yml`
+
+## 2) 설치
 
 ```bash
-cd /Users/jipibe.j/Documents/insta-crawl
+git clone https://github.com/stupidcoderJung/dog-yolov11-k9-json.git
+cd dog-yolov11-k9-json
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
+pip install "numpy<2"
 pip install torch torchvision
 ```
 
-## 5) 빠른 개념 정리
-
-`dog_yolov11.py`의 핵심 구성:
-
-- `DogYOLOv11`
-  - 출력: stride 8/16/32 3개 스케일
-  - 한 셀당 예측: `obj + body(4) + head(4) + breed + emotion + action`
-  - 기본 `width_mult=0.23`로 1.5M 미만 파라미터를 목표로 함
-
-- `DogYOLOLoss`
-  - 픽셀 좌표 박스를 그리드 타깃으로 변환
-  - `Unknown` 라벨은 `ignore_index=-100`으로 loss 제외 가능
-  - head 박스가 없는 샘플(`0,0,0,0`)은 head loss 제외
-
-- `annotations_to_target()`
-  - JSON 어노테이션을 학습용 tensor 딕셔너리로 변환
-
-- `decode_dog_predictions()`
-  - 모델 raw output을 다시 JSON 계약 포맷으로 변환
-  - 기본 NMS 지원 (`apply_nms`, `iou_thres`, `class_agnostic`)
-  - 점수 계산: `objectness * breed_confidence`
-
-- `model_size_report()`
-  - 현재 설정의 파라미터 수를 확인하는 유틸
-
-## 6) 스모크 테스트
-
-아래 명령은 다음을 한 번에 확인합니다.
-
-- 모델 forward
-- loss 계산
-- backward
-- 디코딩 결과(JSON 형태) 생성
-- 파라미터 수 출력
+## 3) 먼저 스모크 테스트
 
 ```bash
-cd /Users/jipibe.j/Documents/insta-crawl
-python smoke_test.py
+python smoke_test.py --img-h 640 --img-w 640 --batch 1 --num-breeds 120 --num-emotions 5 --num-actions 5 --width-mult 0.23
 ```
 
-정상이라면:
+정상 출력 포인트:
 
-- `pred_shapes`가 3개 스케일로 출력
-- `loss`가 숫자로 출력
-- `backward: ok` 출력
-- `decoded_count`가 0 이상으로 출력
+- `pred_shapes: [...]`
+- `loss: <float>`
+- `backward: ok`
+- `nms_before_after_image0: <before> -> <after>`
 
-원하는 설정으로 테스트:
+## 4) 데이터 포맷 (Manifest)
 
-```bash
-python smoke_test.py --num-breeds 120 --num-emotions 5 --num-actions 5 --width-mult 0.23
-```
+`manifest.json`은 리스트(또는 `{ "samples": [...] }`)를 받습니다.
 
-## 7) 120 견종으로 확장하는 방법
-
-핵심은 **클래스 순서 고정**입니다.
-
-1. 견종 이름 리스트(`breed_names`)를 길이 120으로 고정
-2. `breed_to_idx = {name: idx}` 매핑 생성
-3. 모델/로스 생성 시 `num_breeds=120` 사용
-4. 추론 디코딩 시 같은 `breed_names` 전달
-
-예시:
-
-```python
-breed_names = [...]  # 길이 120, 순서 고정
-breed_to_idx = {name: i for i, name in enumerate(breed_names)}
-
-model = DogYOLOv11(num_breeds=120, num_emotions=5, num_actions=5, width_mult=0.23)
-loss_fn = DogYOLOLoss(num_breeds=120, num_emotions=5, num_actions=5)
-```
-
-## 8) 최소 학습 루프 예시
-
-```python
-model.train()
-for images, ann_lists in loader:
-    preds = model(images)
-    targets = [
-        annotations_to_target(
-            anns, breed_to_idx, emotion_to_idx, action_to_idx,
-            unknown_breed_policy="ignore"
-        )
-        for anns in ann_lists
+```json
+[
+  {
+    "image": "images/sample_0001.jpg",
+    "annotations": [
+      {
+        "label": "Border Collie",
+        "bodybndbox": [366, 750, 503, 911],
+        "bodybndbox_coco": [366, 750, 137, 161],
+        "headbndbox": [403, 750, 462, 820],
+        "headbndbox_coco": [403, 750, 59, 70],
+        "emotional": "excited",
+        "action": "running"
+      }
     ]
-    loss = loss_fn(preds, targets, img_size=(images.shape[2], images.shape[3]))
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+  }
+]
 ```
 
-## 9) 자주 하는 실수
+경로 규칙:
 
-- `img_size`를 `(H, W)`가 아니라 단일값으로 넘김
-- `bodybndbox`가 `x2 <= x1` 또는 `y2 <= y1`
-- 클래스 매핑 순서가 학습/추론에서 다름
-- `Unknown` 정책을 정하지 않고 그대로 학습
-- head가 없는 샘플에 임의 head 박스를 넣어 노이즈 증가
+- `image`는 manifest 기준 상대경로 또는 절대경로
+- 학습 시 지정한 `--img-h`, `--img-w`에 맞춰 이미지/박스가 자동 리사이즈
 
-## 10) 참고 문서
+## 5) 라벨 검증기 사용
 
+실제 학습 전, 어노테이션 품질 점검:
+
+```bash
+python label_validator.py \
+  --manifest /path/to/manifest.json \
+  --breed-names /path/to/breeds_120.txt \
+  --emotion-names /path/to/emotions.txt \
+  --action-names /path/to/actions.txt \
+  --allow-unknown-breed
+```
+
+검증 내용:
+
+- bbox 구조/면적 유효성
+- 이미지 범위 초과 여부
+- 클래스 사전에 없는 라벨
+- head가 body 밖에 있는 경우 경고
+
+## 6) 학습 실행 (`train.py`)
+
+### 6-1) 실제 데이터로 학습
+
+```bash
+python train.py \
+  --manifest /path/to/manifest.json \
+  --breed-names /path/to/breeds_120.txt \
+  --emotion-names /path/to/emotions.txt \
+  --action-names /path/to/actions.txt \
+  --validate-labels \
+  --allow-unknown-breed \
+  --epochs 1 \
+  --batch-size 2 \
+  --img-h 640 --img-w 640 \
+  --width-mult 0.23
+```
+
+### 6-2) 샘플(합성) 데이터로 1 epoch 빠르게 확인
+
+```bash
+python train.py \
+  --synthetic-samples 8 \
+  --epochs 1 \
+  --batch-size 2 \
+  --img-h 640 --img-w 640 \
+  --width-mult 0.23 \
+  --max-steps-per-epoch 2
+```
+
+학습 결과:
+
+- `runs/train/<run-name>-<timestamp>/last.pt`
+- `runs/train/<run-name>-<timestamp>/class_names.json`
+- `runs/train/<run-name>-<timestamp>/train_config.json`
+- synthetic 사용 시 `synthetic_dataset/manifest.json`도 생성
+
+## 7) 검증/추론 실행 (`val.py`)
+
+```bash
+python val.py \
+  --manifest /path/to/manifest.json \
+  --checkpoint /path/to/last.pt \
+  --img-h 640 --img-w 640 \
+  --conf-thres 0.25 \
+  --iou-thres 0.50 \
+  --output-json runs/val/predictions.json
+```
+
+출력:
+
+- 평균 loss
+- NMS 전/후 총 박스 수 (`nms_before_total`, `nms_after_total`)
+- 이미지별 JSON 예측 결과 파일
+
+## 8) 클래스 파일 예시
+
+`breeds_120.txt` (한 줄에 하나):
+
+```text
+Border Collie
+Poodle
+...
+```
+
+`emotions.txt`:
+
+```text
+excited
+curious
+calm
+resting
+other
+```
+
+`actions.txt`:
+
+```text
+running
+standing
+resting
+walking
+playing
+```
+
+## 9) NMS 간단 설명
+
+NMS(Non-Maximum Suppression)는 같은 객체에 대해 중복 예측된 박스 중 점수가 낮은 박스를 제거하는 후처리입니다.
+
+- `apply_nms=True/False`로 on/off
+- `class_agnostic=False`면 클래스별 NMS
+- `iou_thres`로 중복 판정 강도 조절
+
+## 10) 1.5M 미만 파라미터 목표
+
+기본값 `width_mult=0.23` 기준으로 약 1.5M 미만 구성을 목표로 했습니다.
+
+확인:
+
+```bash
+python smoke_test.py --width-mult 0.23 --num-breeds 120 --num-emotions 5 --num-actions 5
+```
+
+## 11) 로드맵
+
+- 이슈: [#1](https://github.com/stupidcoderJung/dog-yolov11-k9-json/issues/1)
 - ADR: `docs/adr/0001-dog-yolov11-json-contract.md`
-- 이슈: [#1 Roadmap](https://github.com/stupidcoderJung/dog-yolov11-k9-json/issues/1)
