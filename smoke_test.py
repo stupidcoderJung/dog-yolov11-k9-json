@@ -130,6 +130,20 @@ def main() -> None:
         while len(action_names) < args.num_actions:
             action_names.append(f"action_{len(action_names)}")
 
+        decoded_no_nms = decode_dog_predictions(
+            preds_eval,
+            image_size=(args.img_h, args.img_w),
+            breed_names=breed_names,
+            emotion_names=emotion_names,
+            action_names=action_names,
+            obj_thres=0.05,
+            conf_thres=0.25,
+            iou_thres=0.50,
+            apply_nms=False,
+            class_agnostic=False,
+            max_det=20,
+        )
+
         decoded = decode_dog_predictions(
             preds_eval,
             image_size=(args.img_h, args.img_w),
@@ -143,6 +157,9 @@ def main() -> None:
             class_agnostic=False,
             max_det=20,
         )
+    before = len(decoded_no_nms[0]) if len(decoded_no_nms) > 0 else 0
+    after = len(decoded[0]) if len(decoded) > 0 else 0
+    print("nms_before_after_image0:", before, "->", after)
     print("decoded_count_image0:", len(decoded[0]) if len(decoded) > 0 else 0)
     if len(decoded) > 0 and len(decoded[0]) > 0:
         print("decoded_sample_image0:", json.dumps(decoded[0][0], ensure_ascii=False))
