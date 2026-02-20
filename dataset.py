@@ -124,7 +124,10 @@ def collect_unique_values(samples: List[Sample], key: str) -> List[str]:
         for ann in anns:
             if not isinstance(ann, dict):
                 continue
-            v = str(ann.get(key, "")).strip()
+            raw = ann.get(key, None)
+            if raw is None:
+                continue
+            v = str(raw).strip()
             if not v:
                 continue
             if v in seen:

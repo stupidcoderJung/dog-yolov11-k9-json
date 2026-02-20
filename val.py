@@ -240,6 +240,9 @@ def main() -> int:
             total_loss += float(loss.detach().cpu().item())
             total_batches += 1
 
+            # For pre-NMS counting, avoid max_det truncation by using
+            # the theoretical maximum per-image candidates across scales.
+            max_det_pre_nms = int(sum(int(p.shape[1]) * int(p.shape[2]) for p in preds))
             decoded_no_nms = decode_dog_predictions(
                 preds,
                 image_size=(args.img_h, args.img_w),
@@ -251,7 +254,7 @@ def main() -> int:
                 iou_thres=args.iou_thres,
                 apply_nms=False,
                 class_agnostic=args.class_agnostic,
-                max_det=args.max_det,
+                max_det=max_det_pre_nms,
             )
             decoded_nms = decode_dog_predictions(
                 preds,
