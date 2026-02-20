@@ -3,12 +3,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from torchvision.io import ImageReadMode, read_image
 
-from dataset import load_class_names, load_manifest
+from dataset import (
+    _resolve_image_path as dataset_resolve_image_path,
+    load_class_names,
+    load_manifest,
+)
 
 
 def _is_box_like(box: Any) -> bool:
@@ -22,9 +27,12 @@ def _as_float_box(box: Sequence[Any]) -> Tuple[float, float, float, float]:
 
 def _try_as_float_box(box: Sequence[Any]) -> Optional[Tuple[float, float, float, float]]:
     try:
-        return _as_float_box(box)
+        parsed = _as_float_box(box)
     except (TypeError, ValueError):
         return None
+    if not all(math.isfinite(v) for v in parsed):
+        return None
+    return parsed
 
 
 def _box_errors(box: Sequence[Any], width: int, height: int, name: str) -> List[str]:
@@ -34,7 +42,7 @@ def _box_errors(box: Sequence[Any], width: int, height: int, name: str) -> List[
 
     parsed = _try_as_float_box(box)
     if parsed is None:
-        return [f"{name}: non-numeric coordinate value"]
+        return [f"{name}: invalid coordinate value (non-numeric or non-finite)"]
     x1, y1, x2, y2 = parsed
 
     if x2 <= x1 or y2 <= y1:
@@ -156,21 +164,13 @@ def validate_manifest(
     for i, sample in enumerate(samples):
         total_samples += 1
 
-        image_rel = (
-            sample.get("image")
-            or sample.get("image_path")
-            or sample.get("image_file")
-            or sample.get("file_name")
-        )
-        if image_rel is None:
+        try:
+            image_path = dataset_resolve_image_path(sample, manifest_dir)
+        except ValueError:
             error_count += 1
             if len(messages) < max_messages:
                 messages.append({"sample": i, "type": "error", "msg": "missing image path"})
             continue
-
-        image_path = Path(str(image_rel))
-        if not image_path.is_absolute():
-            image_path = (manifest_dir / image_path).resolve()
 
         if not image_path.exists():
             error_count += 1
