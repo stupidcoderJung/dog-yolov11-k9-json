@@ -155,8 +155,19 @@ def validate_manifest(
                 })
             continue
 
-        img = read_image(str(image_path), mode=ImageReadMode.RGB)
-        _, h, w = img.shape
+        try:
+            img = read_image(str(image_path), mode=ImageReadMode.RGB)
+            _, h, w = img.shape
+        except Exception as e:
+            error_count += 1
+            if len(messages) < max_messages:
+                messages.append({
+                    "sample": i,
+                    "image": str(image_path),
+                    "type": "error",
+                    "msg": f"failed to read image: {e}",
+                })
+            continue
 
         anns = sample.get("annotations", [])
         if not isinstance(anns, list):

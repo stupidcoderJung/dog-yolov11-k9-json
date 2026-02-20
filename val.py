@@ -82,6 +82,63 @@ def infer_class_names(
     return breed_names, emotion_names, action_names
 
 
+def _xyxy_to_coco(box: List[int]) -> List[int]:
+    x1, y1, x2, y2 = box
+    return [x1, y1, max(0, x2 - x1), max(0, y2 - y1)]
+
+
+def _scale_xyxy_to_orig(
+    box: Any,
+    resized_size: Tuple[int, int],
+    orig_size: Tuple[int, int],
+) -> List[int]:
+    if not isinstance(box, list) or len(box) != 4:
+        return [0, 0, 0, 0]
+
+    x1, y1, x2, y2 = [float(v) for v in box]
+    if x2 <= x1 or y2 <= y1:
+        return [0, 0, 0, 0]
+
+    resized_h, resized_w = resized_size
+    orig_h, orig_w = orig_size
+    sx = float(orig_w) / max(float(resized_w), 1.0)
+    sy = float(orig_h) / max(float(resized_h), 1.0)
+
+    ox1 = int(round(x1 * sx))
+    oy1 = int(round(y1 * sy))
+    ox2 = int(round(x2 * sx))
+    oy2 = int(round(y2 * sy))
+
+    ox1 = min(max(ox1, 0), max(orig_w - 1, 0))
+    oy1 = min(max(oy1, 0), max(orig_h - 1, 0))
+    ox2 = min(max(ox2, 0), max(orig_w - 1, 0))
+    oy2 = min(max(oy2, 0), max(orig_h - 1, 0))
+
+    if ox2 <= ox1 or oy2 <= oy1:
+        return [0, 0, 0, 0]
+    return [ox1, oy1, ox2, oy2]
+
+
+def _remap_predictions_to_original(
+    predictions: List[Dict[str, Any]],
+    resized_size: Tuple[int, int],
+    orig_size: Tuple[int, int],
+) -> List[Dict[str, Any]]:
+    remapped: List[Dict[str, Any]] = []
+    for rec in predictions:
+        out = dict(rec)
+
+        body = _scale_xyxy_to_orig(out.get("bodybndbox", [0, 0, 0, 0]), resized_size, orig_size)
+        head = _scale_xyxy_to_orig(out.get("headbndbox", [0, 0, 0, 0]), resized_size, orig_size)
+
+        out["bodybndbox"] = body
+        out["bodybndbox_coco"] = _xyxy_to_coco(body)
+        out["headbndbox"] = head
+        out["headbndbox_coco"] = _xyxy_to_coco(head)
+        remapped.append(out)
+    return remapped
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="DogYOLOv11 validation/eval script")
     parser.add_argument("--manifest", required=True, type=str)
@@ -215,10 +272,22 @@ def main() -> int:
                 after_cnt = len(decoded_nms[i])
                 nms_before += before_cnt
                 nms_after += after_cnt
+
+                orig_h, orig_w = meta["orig_sizes"][i]
+                resized_h, resized_w = meta["image_sizes"][i]
+                preds_orig = _remap_predictions_to_original(
+                    decoded_nms[i],
+                    resized_size=(int(resized_h), int(resized_w)),
+                    orig_size=(int(orig_h), int(orig_w)),
+                )
+
                 outputs.append(
                     {
                         "image_path": meta["image_paths"][i],
-                        "predictions": decoded_nms[i],
+                        "prediction_space": "original_image",
+                        "orig_size": [int(orig_h), int(orig_w)],
+                        "resized_size": [int(resized_h), int(resized_w)],
+                        "predictions": preds_orig,
                         "nms_before_count": before_cnt,
                         "nms_after_count": after_cnt,
                     }
