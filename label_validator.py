@@ -100,10 +100,18 @@ def validate_annotation(
             errors.append("headbndbox: non-numeric coordinate value")
             head_parsed = (0.0, 0.0, 0.0, 0.0)
         hx1, hy1, hx2, hy2 = head_parsed
-        has_head = (hx2 > hx1) and (hy2 > hy1)
-        if has_head:
+
+        # Only explicit [0,0,0,0] is treated as "no head" sentinel.
+        is_no_head_sentinel = (
+            abs(hx1) < 1e-9
+            and abs(hy1) < 1e-9
+            and abs(hx2) < 1e-9
+            and abs(hy2) < 1e-9
+        )
+        if not is_no_head_sentinel:
             errors.extend(_box_errors(head, width, height, "headbndbox"))
-            if _is_box_like(body):
+            has_valid_head = (hx2 > hx1) and (hy2 > hy1)
+            if has_valid_head and _is_box_like(body):
                 body_parsed = _try_as_float_box(body)
                 if body_parsed is not None:
                     bx1, by1, bx2, by2 = body_parsed

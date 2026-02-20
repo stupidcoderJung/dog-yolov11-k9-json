@@ -67,9 +67,18 @@ def _resolve_image_path(sample: Sample, manifest_dir: Path) -> Path:
     image_key_candidates = ["image", "image_path", "image_file", "file_name"]
     image_value = None
     for k in image_key_candidates:
-        if k in sample:
-            image_value = sample[k]
-            break
+        if k not in sample:
+            continue
+        raw = sample.get(k, None)
+        if raw is None:
+            continue
+        v = str(raw).strip()
+        if not v:
+            continue
+        if v.lower() in {"none", "null"}:
+            continue
+        image_value = v
+        break
     if image_value is None:
         raise ValueError("Sample does not have image path key (image/image_path/image_file/file_name)")
 
