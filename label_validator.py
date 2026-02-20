@@ -40,9 +40,33 @@ def _box_errors(box: Sequence[Any], width: int, height: int, name: str) -> List[
     if x2 <= x1 or y2 <= y1:
         errs.append(f"{name}: invalid area (x2<=x1 or y2<=y1)")
 
-    if x1 < 0 or y1 < 0 or x2 > width or y2 > height:
+    # Valid pixel-space xyxy should satisfy:
+    # 0 <= x1 < x2 < width and 0 <= y1 < y2 < height
+    if (
+        x1 < 0
+        or y1 < 0
+        or x1 >= width
+        or y1 >= height
+        or x2 >= width
+        or y2 >= height
+    ):
         errs.append(f"{name}: out-of-image range for image size ({width},{height})")
     return errs
+
+
+def _required_class_field(ann: Dict[str, Any], key: str, errors: List[str]) -> str:
+    if key not in ann:
+        errors.append(f"missing required key: {key}")
+        return ""
+    raw = ann.get(key, None)
+    if raw is None:
+        errors.append(f"{key}: required and cannot be null")
+        return ""
+    val = str(raw).strip()
+    if not val:
+        errors.append(f"{key}: required and cannot be empty")
+        return ""
+    return val
 
 
 def validate_annotation(
@@ -57,13 +81,9 @@ def validate_annotation(
     errors: List[str] = []
     warnings: List[str] = []
 
-    for req in ["label", "bodybndbox", "emotional", "action"]:
-        if req not in ann:
-            errors.append(f"missing required key: {req}")
-
-    label = str(ann.get("label", ""))
-    emo = str(ann.get("emotional", ""))
-    action = str(ann.get("action", ""))
+    label = _required_class_field(ann, "label", errors)
+    emo = _required_class_field(ann, "emotional", errors)
+    action = _required_class_field(ann, "action", errors)
 
     body = ann.get("bodybndbox", None)
     if body is None:
