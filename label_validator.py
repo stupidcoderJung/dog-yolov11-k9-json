@@ -20,12 +20,23 @@ def _as_float_box(box: Sequence[Any]) -> Tuple[float, float, float, float]:
     return float(x1), float(y1), float(x2), float(y2)
 
 
+def _try_as_float_box(box: Sequence[Any]) -> Optional[Tuple[float, float, float, float]]:
+    try:
+        return _as_float_box(box)
+    except (TypeError, ValueError):
+        return None
+
+
 def _box_errors(box: Sequence[Any], width: int, height: int, name: str) -> List[str]:
     errs: List[str] = []
     if not _is_box_like(box):
         return [f"{name}: expected [x1,y1,x2,y2]"]
 
-    x1, y1, x2, y2 = _as_float_box(box)
+    parsed = _try_as_float_box(box)
+    if parsed is None:
+        return [f"{name}: non-numeric coordinate value"]
+    x1, y1, x2, y2 = parsed
+
     if x2 <= x1 or y2 <= y1:
         errs.append(f"{name}: invalid area (x2<=x1 or y2<=y1)")
 
@@ -64,14 +75,20 @@ def validate_annotation(
     if not _is_box_like(head):
         errors.append("headbndbox: expected [x1,y1,x2,y2]")
     else:
-        hx1, hy1, hx2, hy2 = _as_float_box(head)
+        head_parsed = _try_as_float_box(head)
+        if head_parsed is None:
+            errors.append("headbndbox: non-numeric coordinate value")
+            head_parsed = (0.0, 0.0, 0.0, 0.0)
+        hx1, hy1, hx2, hy2 = head_parsed
         has_head = (hx2 > hx1) and (hy2 > hy1)
         if has_head:
             errors.extend(_box_errors(head, width, height, "headbndbox"))
             if _is_box_like(body):
-                bx1, by1, bx2, by2 = _as_float_box(body)
-                if hx1 < bx1 or hy1 < by1 or hx2 > bx2 or hy2 > by2:
-                    warnings.append("headbndbox is not fully inside bodybndbox")
+                body_parsed = _try_as_float_box(body)
+                if body_parsed is not None:
+                    bx1, by1, bx2, by2 = body_parsed
+                    if hx1 < bx1 or hy1 < by1 or hx2 > bx2 or hy2 > by2:
+                        warnings.append("headbndbox is not fully inside bodybndbox")
 
     if breed_set is not None and label not in breed_set:
         if not (allow_unknown_breed and label == "Unknown"):
@@ -111,7 +128,12 @@ def validate_manifest(
     for i, sample in enumerate(samples):
         total_samples += 1
 
-        image_rel = sample.get("image") or sample.get("image_path") or sample.get("image_file")
+        image_rel = (
+            sample.get("image")
+            or sample.get("image_path")
+            or sample.get("image_file")
+            or sample.get("file_name")
+        )
         if image_rel is None:
             error_count += 1
             if len(messages) < max_messages:
