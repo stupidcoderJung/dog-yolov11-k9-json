@@ -5,6 +5,7 @@ import argparse
 import json
 import math
 import random
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -159,6 +160,18 @@ def save_json(path: Path, data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def collect_cli_long_options(argv: List[str]) -> set[str]:
+    options: set[str] = set()
+    for token in argv:
+        if not token.startswith("--"):
+            continue
+        raw = token[2:].split("=", 1)[0].strip()
+        if not raw:
+            continue
+        options.add(raw.replace("-", "_"))
+    return options
+
+
 def assert_resume_class_compatibility(
     ckpt: Dict[str, Any],
     *,
@@ -248,6 +261,7 @@ def main() -> int:
     parser.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint (last.pt) to resume")
     parser.add_argument("--synthetic-samples", type=int, default=0, help="If >0, auto-generate synthetic dataset")
     args = parser.parse_args()
+    cli_options = collect_cli_long_options(sys.argv[1:])
 
     seed_all(args.seed)
     device = pick_device(args.device)
@@ -331,8 +345,6 @@ def main() -> int:
         steps_per_epoch = min(steps_per_epoch, int(args.max_steps_per_epoch))
     steps_per_epoch = max(int(steps_per_epoch), 1)
     total_train_steps = max(int(args.epochs) * steps_per_epoch, 1)
-    warmup_steps = int(max(float(args.warmup_epochs), 0.0) * steps_per_epoch)
-    min_lr = min(float(args.min_lr), float(args.lr))
 
     breed_to_idx = {name: i for i, name in enumerate(breed_names)}
     emotion_to_idx = {name: i for i, name in enumerate(emotion_names)}
@@ -358,6 +370,18 @@ def main() -> int:
     if resume_path is not None:
         ckpt = torch.load(str(resume_path), map_location=device)
         if isinstance(ckpt, dict):
+            ckpt_args = ckpt.get("args")
+            restored_lr_fields: List[str] = []
+            if isinstance(ckpt_args, dict):
+                for field in ("lr", "lr_schedule", "warmup_epochs", "min_lr"):
+                    if field in ckpt_args and field not in cli_options:
+                        setattr(args, field, ckpt_args[field])
+                        restored_lr_fields.append(field)
+            if restored_lr_fields:
+                print(
+                    "resume_lr_policy: restored_from_checkpoint="
+                    + ",".join(restored_lr_fields)
+                )
             assert_resume_class_compatibility(
                 ckpt,
                 breed_names=breed_names,
@@ -375,6 +399,9 @@ def main() -> int:
             f"resume_from: {resume_path} start_epoch={start_epoch} "
             f"target_epochs={args.epochs} global_step={global_step}"
         )
+
+    warmup_steps = int(max(float(args.warmup_epochs), 0.0) * steps_per_epoch)
+    min_lr = min(float(args.min_lr), float(args.lr))
 
     size_info = model_size_report(
         num_breeds=len(breed_names),
