@@ -172,11 +172,18 @@ def compute_step_lr(
         return float(base_lr)
 
     s = max(int(step), 0)
-    if warmup_steps > 0 and s < warmup_steps:
-        return float(base_lr) * float(s + 1) / float(max(warmup_steps, 1))
+    total = max(int(total_steps), 1)
+    warmup = max(int(warmup_steps), 0)
 
-    decay_steps = max(int(total_steps) - int(warmup_steps), 1)
-    progress = float(s - warmup_steps) / float(decay_steps)
+    if warmup > 0 and s < warmup:
+        return float(base_lr) * float(s + 1) / float(max(warmup, 1))
+
+    decay_start = warmup
+    decay_end = total - 1
+    if decay_end <= decay_start:
+        return float(min_lr)
+
+    progress = float(s - decay_start) / float(decay_end - decay_start)
     progress = min(max(progress, 0.0), 1.0)
     cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
     return float(min_lr) + (float(base_lr) - float(min_lr)) * cosine
