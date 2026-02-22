@@ -159,6 +159,37 @@ def save_json(path: Path, data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def assert_resume_class_compatibility(
+    ckpt: Dict[str, Any],
+    *,
+    breed_names: List[str],
+    emotion_names: List[str],
+    action_names: List[str],
+) -> None:
+    mismatches: List[str] = []
+    details: List[str] = []
+    for field, current in (
+        ("breed_names", breed_names),
+        ("emotion_names", emotion_names),
+        ("action_names", action_names),
+    ):
+        saved = ckpt.get(field)
+        if saved is None:
+            continue
+        saved_list = list(saved)
+        current_list = list(current)
+        if saved_list != current_list:
+            mismatches.append(field)
+            details.append(f"{field}: checkpoint={saved_list} current={current_list}")
+
+    if mismatches:
+        mismatch_fields = ", ".join(mismatches)
+        mismatch_details = "; ".join(details)
+        raise ValueError(
+            f"Resume blocked due to class-order mismatch ({mismatch_fields}). {mismatch_details}"
+        )
+
+
 def compute_step_lr(
     step: int,
     *,
@@ -326,6 +357,13 @@ def main() -> int:
     start_epoch = 1
     if resume_path is not None:
         ckpt = torch.load(str(resume_path), map_location=device)
+        if isinstance(ckpt, dict):
+            assert_resume_class_compatibility(
+                ckpt,
+                breed_names=breed_names,
+                emotion_names=emotion_names,
+                action_names=action_names,
+            )
         state = ckpt.get("model", ckpt)
         model.load_state_dict(state, strict=True)
         if isinstance(ckpt, dict) and ckpt.get("optimizer") is not None:
