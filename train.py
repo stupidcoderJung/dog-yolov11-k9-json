@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import time
 from pathlib import Path
@@ -158,6 +159,29 @@ def save_json(path: Path, data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def compute_step_lr(
+    step: int,
+    *,
+    base_lr: float,
+    min_lr: float,
+    total_steps: int,
+    warmup_steps: int,
+    schedule: str,
+) -> float:
+    if schedule == "none":
+        return float(base_lr)
+
+    s = max(int(step), 0)
+    if warmup_steps > 0 and s < warmup_steps:
+        return float(base_lr) * float(s + 1) / float(max(warmup_steps, 1))
+
+    decay_steps = max(int(total_steps) - int(warmup_steps), 1)
+    progress = float(s - warmup_steps) / float(decay_steps)
+    progress = min(max(progress, 0.0), 1.0)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return float(min_lr) + (float(base_lr) - float(min_lr)) * cosine
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="DogYOLOv11 training script")
     parser.add_argument("--manifest", type=str, default=None, help="Path to dataset manifest json")
@@ -168,6 +192,9 @@ def main() -> int:
     parser.add_argument("--img-w", type=int, default=640)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--lr-schedule", type=str, default="none", choices=["none", "cosine"])
+    parser.add_argument("--warmup-epochs", type=float, default=0.0)
+    parser.add_argument("--min-lr", type=float, default=1e-5)
     parser.add_argument("--width-mult", type=float, default=0.23)
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--seed", type=int, default=42)
@@ -180,14 +207,22 @@ def main() -> int:
     parser.add_argument("--allow-unknown-breed", action="store_true")
     parser.add_argument("--save-dir", type=str, default="runs/train")
     parser.add_argument("--run-name", type=str, default="exp")
+    parser.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint (last.pt) to resume")
     parser.add_argument("--synthetic-samples", type=int, default=0, help="If >0, auto-generate synthetic dataset")
     args = parser.parse_args()
 
     seed_all(args.seed)
     device = pick_device(args.device)
 
-    run_stamp = time.strftime("%Y%m%d-%H%M%S")
-    run_dir = Path(args.save_dir) / f"{args.run_name}-{run_stamp}"
+    resume_path: Path | None = None
+    if args.resume_from:
+        resume_path = Path(args.resume_from).resolve()
+        if not resume_path.exists():
+            raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
+        run_dir = resume_path.parent
+    else:
+        run_stamp = time.strftime("%Y%m%d-%H%M%S")
+        run_dir = Path(args.save_dir) / f"{args.run_name}-{run_stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_path = args.manifest
@@ -253,6 +288,14 @@ def main() -> int:
         drop_last=False,
     )
 
+    steps_per_epoch = len(loader)
+    if args.max_steps_per_epoch > 0:
+        steps_per_epoch = min(steps_per_epoch, int(args.max_steps_per_epoch))
+    steps_per_epoch = max(int(steps_per_epoch), 1)
+    total_train_steps = max(int(args.epochs) * steps_per_epoch, 1)
+    warmup_steps = int(max(float(args.warmup_epochs), 0.0) * steps_per_epoch)
+    min_lr = min(float(args.min_lr), float(args.lr))
+
     breed_to_idx = {name: i for i, name in enumerate(breed_names)}
     emotion_to_idx = {name: i for i, name in enumerate(emotion_names)}
     action_to_idx = {name: i for i, name in enumerate(action_names)}
@@ -271,6 +314,22 @@ def main() -> int:
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    global_step = 0
+    start_epoch = 1
+    if resume_path is not None:
+        ckpt = torch.load(str(resume_path), map_location=device)
+        state = ckpt.get("model", ckpt)
+        model.load_state_dict(state, strict=True)
+        if isinstance(ckpt, dict) and ckpt.get("optimizer") is not None:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        if isinstance(ckpt, dict):
+            global_step = int(ckpt.get("global_step", 0))
+            start_epoch = int(ckpt.get("epoch", 0)) + 1
+        print(
+            f"resume_from: {resume_path} start_epoch={start_epoch} "
+            f"target_epochs={args.epochs} global_step={global_step}"
+        )
 
     size_info = model_size_report(
         num_breeds=len(breed_names),
@@ -299,20 +358,43 @@ def main() -> int:
             "img_w": args.img_w,
             "lr": args.lr,
             "weight_decay": args.weight_decay,
+            "lr_schedule": args.lr_schedule,
+            "warmup_epochs": args.warmup_epochs,
+            "min_lr": min_lr,
+            "steps_per_epoch": steps_per_epoch,
+            "total_train_steps": total_train_steps,
+            "warmup_steps": warmup_steps,
             "width_mult": args.width_mult,
             "unknown_breed_policy": args.unknown_breed_policy,
             "seed": args.seed,
             "device": device,
+            "resume_from": str(resume_path) if resume_path is not None else None,
+            "start_epoch": int(start_epoch),
+            "initial_global_step": int(global_step),
         },
     )
 
-    global_step = 0
-    for epoch in range(1, args.epochs + 1):
+    if start_epoch > args.epochs:
+        print(f"nothing_to_do: start_epoch={start_epoch} > epochs={args.epochs}")
+        return 0
+
+    for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         epoch_loss = 0.0
         step_count = 0
 
         for step_idx, (images, ann_lists, _meta) in enumerate(loader, start=1):
+            current_lr = compute_step_lr(
+                global_step,
+                base_lr=float(args.lr),
+                min_lr=min_lr,
+                total_steps=total_train_steps,
+                warmup_steps=warmup_steps,
+                schedule=args.lr_schedule,
+            )
+            for pg in optimizer.param_groups:
+                pg["lr"] = current_lr
+
             images = images.to(device)
             targets = [
                 annotations_to_target(
@@ -339,7 +421,7 @@ def main() -> int:
 
             print(
                 f"epoch={epoch}/{args.epochs} step={step_idx}/{len(loader)} "
-                f"global_step={global_step} loss={loss_val:.6f}"
+                f"global_step={global_step} loss={loss_val:.6f} lr={current_lr:.8f}"
             )
 
             if args.max_steps_per_epoch > 0 and step_idx >= args.max_steps_per_epoch:
