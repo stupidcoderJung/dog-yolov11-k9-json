@@ -225,7 +225,7 @@ def compute_step_lr(
     decay_start = warmup
     decay_end = total - 1
     if decay_end <= decay_start:
-        return float(min_lr)
+        return float(base_lr)
 
     progress = float(s - decay_start) / float(decay_end - decay_start)
     progress = min(max(progress, 0.0), 1.0)
@@ -340,11 +340,7 @@ def main() -> int:
         drop_last=False,
     )
 
-    steps_per_epoch = len(loader)
-    if args.max_steps_per_epoch > 0:
-        steps_per_epoch = min(steps_per_epoch, int(args.max_steps_per_epoch))
-    steps_per_epoch = max(int(steps_per_epoch), 1)
-    total_train_steps = max(int(args.epochs) * steps_per_epoch, 1)
+    raw_steps_per_epoch = max(len(loader), 1)
 
     breed_to_idx = {name: i for i, name in enumerate(breed_names)}
     emotion_to_idx = {name: i for i, name in enumerate(emotion_names)}
@@ -372,15 +368,24 @@ def main() -> int:
         if isinstance(ckpt, dict):
             ckpt_args = ckpt.get("args")
             restored_lr_fields: List[str] = []
+            restored_step_fields: List[str] = []
             if isinstance(ckpt_args, dict):
                 for field in ("lr", "lr_schedule", "warmup_epochs", "min_lr"):
                     if field in ckpt_args and field not in cli_options:
                         setattr(args, field, ckpt_args[field])
                         restored_lr_fields.append(field)
+                if "max_steps_per_epoch" in ckpt_args and "max_steps_per_epoch" not in cli_options:
+                    args.max_steps_per_epoch = int(ckpt_args["max_steps_per_epoch"])
+                    restored_step_fields.append("max_steps_per_epoch")
             if restored_lr_fields:
                 print(
                     "resume_lr_policy: restored_from_checkpoint="
                     + ",".join(restored_lr_fields)
+                )
+            if restored_step_fields:
+                print(
+                    "resume_step_policy: restored_from_checkpoint="
+                    + ",".join(restored_step_fields)
                 )
             assert_resume_class_compatibility(
                 ckpt,
@@ -400,6 +405,11 @@ def main() -> int:
             f"target_epochs={args.epochs} global_step={global_step}"
         )
 
+    steps_per_epoch = raw_steps_per_epoch
+    if args.max_steps_per_epoch > 0:
+        steps_per_epoch = min(steps_per_epoch, int(args.max_steps_per_epoch))
+    steps_per_epoch = max(int(steps_per_epoch), 1)
+    total_train_steps = max(int(args.epochs) * steps_per_epoch, 1)
     warmup_steps = int(max(float(args.warmup_epochs), 0.0) * steps_per_epoch)
     min_lr = min(float(args.min_lr), float(args.lr))
 
