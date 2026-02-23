@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -158,6 +160,104 @@ def save_json(path: Path, data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def collect_cli_long_options(
+    argv: List[str],
+    parser: argparse.ArgumentParser | None = None,
+) -> set[str]:
+    options: set[str] = set()
+    option_actions = {}
+    if parser is not None:
+        option_actions = {
+            opt: action
+            for opt, action in parser._option_string_actions.items()
+            if opt.startswith("--")
+        }
+
+    for token in argv:
+        if not token.startswith("--"):
+            continue
+        raw = token[2:].split("=", 1)[0].strip()
+        if not raw:
+            continue
+        canonical = None
+        if option_actions:
+            exact = f"--{raw}"
+            action = option_actions.get(exact)
+            if action is not None:
+                canonical = action.dest
+            else:
+                matched_dests = {
+                    action.dest
+                    for opt, action in option_actions.items()
+                    if opt.startswith(exact)
+                }
+                if len(matched_dests) == 1:
+                    canonical = next(iter(matched_dests))
+        options.add(canonical or raw.replace("-", "_"))
+    return options
+
+
+def assert_resume_class_compatibility(
+    ckpt: Dict[str, Any],
+    *,
+    breed_names: List[str],
+    emotion_names: List[str],
+    action_names: List[str],
+) -> None:
+    mismatches: List[str] = []
+    details: List[str] = []
+    for field, current in (
+        ("breed_names", breed_names),
+        ("emotion_names", emotion_names),
+        ("action_names", action_names),
+    ):
+        saved = ckpt.get(field)
+        if saved is None:
+            continue
+        saved_list = list(saved)
+        current_list = list(current)
+        if saved_list != current_list:
+            mismatches.append(field)
+            details.append(f"{field}: checkpoint={saved_list} current={current_list}")
+
+    if mismatches:
+        mismatch_fields = ", ".join(mismatches)
+        mismatch_details = "; ".join(details)
+        raise ValueError(
+            f"Resume blocked due to class-order mismatch ({mismatch_fields}). {mismatch_details}"
+        )
+
+
+def compute_step_lr(
+    step: int,
+    *,
+    base_lr: float,
+    min_lr: float,
+    total_steps: int,
+    warmup_steps: int,
+    schedule: str,
+) -> float:
+    if schedule == "none":
+        return float(base_lr)
+
+    s = max(int(step), 0)
+    total = max(int(total_steps), 1)
+    warmup = max(int(warmup_steps), 0)
+
+    if warmup > 0 and s < warmup:
+        return float(base_lr) * float(s + 1) / float(max(warmup, 1))
+
+    decay_start = warmup
+    decay_end = total - 1
+    if decay_end <= decay_start:
+        return float(base_lr)
+
+    progress = float(s - decay_start) / float(decay_end - decay_start)
+    progress = min(max(progress, 0.0), 1.0)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return float(min_lr) + (float(base_lr) - float(min_lr)) * cosine
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="DogYOLOv11 training script")
     parser.add_argument("--manifest", type=str, default=None, help="Path to dataset manifest json")
@@ -168,6 +268,9 @@ def main() -> int:
     parser.add_argument("--img-w", type=int, default=640)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--lr-schedule", type=str, default="none", choices=["none", "cosine"])
+    parser.add_argument("--warmup-epochs", type=float, default=0.0)
+    parser.add_argument("--min-lr", type=float, default=1e-5)
     parser.add_argument("--width-mult", type=float, default=0.23)
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda", "mps"])
     parser.add_argument("--seed", type=int, default=42)
@@ -180,14 +283,23 @@ def main() -> int:
     parser.add_argument("--allow-unknown-breed", action="store_true")
     parser.add_argument("--save-dir", type=str, default="runs/train")
     parser.add_argument("--run-name", type=str, default="exp")
+    parser.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint (last.pt) to resume")
     parser.add_argument("--synthetic-samples", type=int, default=0, help="If >0, auto-generate synthetic dataset")
     args = parser.parse_args()
+    cli_options = collect_cli_long_options(sys.argv[1:], parser=parser)
 
     seed_all(args.seed)
     device = pick_device(args.device)
 
-    run_stamp = time.strftime("%Y%m%d-%H%M%S")
-    run_dir = Path(args.save_dir) / f"{args.run_name}-{run_stamp}"
+    resume_path: Path | None = None
+    if args.resume_from:
+        resume_path = Path(args.resume_from).resolve()
+        if not resume_path.exists():
+            raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
+        run_dir = resume_path.parent
+    else:
+        run_stamp = time.strftime("%Y%m%d-%H%M%S")
+        run_dir = Path(args.save_dir) / f"{args.run_name}-{run_stamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_path = args.manifest
@@ -253,6 +365,8 @@ def main() -> int:
         drop_last=False,
     )
 
+    raw_steps_per_epoch = max(len(loader), 1)
+
     breed_to_idx = {name: i for i, name in enumerate(breed_names)}
     emotion_to_idx = {name: i for i, name in enumerate(emotion_names)}
     action_to_idx = {name: i for i, name in enumerate(action_names)}
@@ -271,6 +385,58 @@ def main() -> int:
     ).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    global_step = 0
+    start_epoch = 1
+    if resume_path is not None:
+        ckpt = torch.load(str(resume_path), map_location=device)
+        if isinstance(ckpt, dict):
+            ckpt_args = ckpt.get("args")
+            restored_lr_fields: List[str] = []
+            restored_step_fields: List[str] = []
+            if isinstance(ckpt_args, dict):
+                for field in ("lr", "lr_schedule", "warmup_epochs", "min_lr"):
+                    if field in ckpt_args and field not in cli_options:
+                        setattr(args, field, ckpt_args[field])
+                        restored_lr_fields.append(field)
+                if "max_steps_per_epoch" in ckpt_args and "max_steps_per_epoch" not in cli_options:
+                    args.max_steps_per_epoch = int(ckpt_args["max_steps_per_epoch"])
+                    restored_step_fields.append("max_steps_per_epoch")
+            if restored_lr_fields:
+                print(
+                    "resume_lr_policy: restored_from_checkpoint="
+                    + ",".join(restored_lr_fields)
+                )
+            if restored_step_fields:
+                print(
+                    "resume_step_policy: restored_from_checkpoint="
+                    + ",".join(restored_step_fields)
+                )
+            assert_resume_class_compatibility(
+                ckpt,
+                breed_names=breed_names,
+                emotion_names=emotion_names,
+                action_names=action_names,
+            )
+        state = ckpt.get("model", ckpt)
+        model.load_state_dict(state, strict=True)
+        if isinstance(ckpt, dict) and ckpt.get("optimizer") is not None:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        if isinstance(ckpt, dict):
+            global_step = int(ckpt.get("global_step", 0))
+            start_epoch = int(ckpt.get("epoch", 0)) + 1
+        print(
+            f"resume_from: {resume_path} start_epoch={start_epoch} "
+            f"target_epochs={args.epochs} global_step={global_step}"
+        )
+
+    steps_per_epoch = raw_steps_per_epoch
+    if args.max_steps_per_epoch > 0:
+        steps_per_epoch = min(steps_per_epoch, int(args.max_steps_per_epoch))
+    steps_per_epoch = max(int(steps_per_epoch), 1)
+    total_train_steps = max(int(args.epochs) * steps_per_epoch, 1)
+    warmup_steps = int(max(float(args.warmup_epochs), 0.0) * steps_per_epoch)
+    min_lr = min(float(args.min_lr), float(args.lr))
 
     size_info = model_size_report(
         num_breeds=len(breed_names),
@@ -299,20 +465,43 @@ def main() -> int:
             "img_w": args.img_w,
             "lr": args.lr,
             "weight_decay": args.weight_decay,
+            "lr_schedule": args.lr_schedule,
+            "warmup_epochs": args.warmup_epochs,
+            "min_lr": min_lr,
+            "steps_per_epoch": steps_per_epoch,
+            "total_train_steps": total_train_steps,
+            "warmup_steps": warmup_steps,
             "width_mult": args.width_mult,
             "unknown_breed_policy": args.unknown_breed_policy,
             "seed": args.seed,
             "device": device,
+            "resume_from": str(resume_path) if resume_path is not None else None,
+            "start_epoch": int(start_epoch),
+            "initial_global_step": int(global_step),
         },
     )
 
-    global_step = 0
-    for epoch in range(1, args.epochs + 1):
+    if start_epoch > args.epochs:
+        print(f"nothing_to_do: start_epoch={start_epoch} > epochs={args.epochs}")
+        return 0
+
+    for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         epoch_loss = 0.0
         step_count = 0
 
         for step_idx, (images, ann_lists, _meta) in enumerate(loader, start=1):
+            current_lr = compute_step_lr(
+                global_step,
+                base_lr=float(args.lr),
+                min_lr=min_lr,
+                total_steps=total_train_steps,
+                warmup_steps=warmup_steps,
+                schedule=args.lr_schedule,
+            )
+            for pg in optimizer.param_groups:
+                pg["lr"] = current_lr
+
             images = images.to(device)
             targets = [
                 annotations_to_target(
@@ -339,7 +528,7 @@ def main() -> int:
 
             print(
                 f"epoch={epoch}/{args.epochs} step={step_idx}/{len(loader)} "
-                f"global_step={global_step} loss={loss_val:.6f}"
+                f"global_step={global_step} loss={loss_val:.6f} lr={current_lr:.8f}"
             )
 
             if args.max_steps_per_epoch > 0 and step_idx >= args.max_steps_per_epoch:
