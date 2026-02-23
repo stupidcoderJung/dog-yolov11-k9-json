@@ -160,15 +160,40 @@ def save_json(path: Path, data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def collect_cli_long_options(argv: List[str]) -> set[str]:
+def collect_cli_long_options(
+    argv: List[str],
+    parser: argparse.ArgumentParser | None = None,
+) -> set[str]:
     options: set[str] = set()
+    option_actions = {}
+    if parser is not None:
+        option_actions = {
+            opt: action
+            for opt, action in parser._option_string_actions.items()
+            if opt.startswith("--")
+        }
+
     for token in argv:
         if not token.startswith("--"):
             continue
         raw = token[2:].split("=", 1)[0].strip()
         if not raw:
             continue
-        options.add(raw.replace("-", "_"))
+        canonical = None
+        if option_actions:
+            exact = f"--{raw}"
+            action = option_actions.get(exact)
+            if action is not None:
+                canonical = action.dest
+            else:
+                matched_dests = {
+                    action.dest
+                    for opt, action in option_actions.items()
+                    if opt.startswith(exact)
+                }
+                if len(matched_dests) == 1:
+                    canonical = next(iter(matched_dests))
+        options.add(canonical or raw.replace("-", "_"))
     return options
 
 
@@ -261,7 +286,7 @@ def main() -> int:
     parser.add_argument("--resume-from", type=str, default=None, help="Path to checkpoint (last.pt) to resume")
     parser.add_argument("--synthetic-samples", type=int, default=0, help="If >0, auto-generate synthetic dataset")
     args = parser.parse_args()
-    cli_options = collect_cli_long_options(sys.argv[1:])
+    cli_options = collect_cli_long_options(sys.argv[1:], parser=parser)
 
     seed_all(args.seed)
     device = pick_device(args.device)
