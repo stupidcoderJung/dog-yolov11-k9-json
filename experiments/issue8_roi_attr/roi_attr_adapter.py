@@ -82,22 +82,28 @@ class RoiAttrExperimentModel(nn.Module):
         self,
         decoded: List[List[Dict[str, Any]]],
         *,
+        conf_thres: float,
         iou_thres: float,
         max_det: int,
         class_agnostic: bool,
     ) -> List[List[Dict[str, Any]]]:
         out: List[List[Dict[str, Any]]] = []
         for per_img in decoded:
-            if not per_img:
+            filtered = [
+                rec
+                for rec in per_img
+                if float(rec.get("confidence", 0.0)) >= float(conf_thres)
+            ]
+            if not filtered:
                 out.append([])
                 continue
 
             boxes = torch.tensor(
-                [rec.get("bodybndbox", [0, 0, 0, 0]) for rec in per_img],
+                [rec.get("bodybndbox", [0, 0, 0, 0]) for rec in filtered],
                 dtype=torch.float32,
             )
             scores = torch.tensor(
-                [float(rec.get("confidence", 0.0)) for rec in per_img],
+                [float(rec.get("confidence", 0.0)) for rec in filtered],
                 dtype=torch.float32,
             )
 
@@ -106,7 +112,7 @@ class RoiAttrExperimentModel(nn.Module):
             else:
                 label_to_id: Dict[str, int] = {}
                 class_ids: List[int] = []
-                for rec in per_img:
+                for rec in filtered:
                     label = str(rec.get("label", ""))
                     if label not in label_to_id:
                         label_to_id[label] = len(label_to_id)
@@ -126,7 +132,7 @@ class RoiAttrExperimentModel(nn.Module):
                     else torch.zeros((0,), dtype=torch.long)
                 )
 
-            kept_records = [per_img[i] for i in keep.tolist()]
+            kept_records = [filtered[i] for i in keep.tolist()]
             kept_records = sorted(
                 kept_records,
                 key=lambda rec: float(rec.get("confidence", 0.0)),
@@ -151,6 +157,8 @@ class RoiAttrExperimentModel(nn.Module):
     ) -> List[List[Dict[str, Any]]]:
         preds, features = self.detector(images, return_features=True)
         defer_nms = self.roi_head.num_breeds is not None
+        # When ROI breed relabel is enabled, keep detector candidates until ROI pass.
+        decode_conf_thres = 0.0 if defer_nms else conf_thres
         decoded = decode_dog_predictions(
             preds,
             image_size=(int(images.shape[-2]), int(images.shape[-1])),
@@ -158,7 +166,7 @@ class RoiAttrExperimentModel(nn.Module):
             emotion_names=emotion_names,
             action_names=action_names,
             obj_thres=obj_thres,
-            conf_thres=conf_thres,
+            conf_thres=decode_conf_thres,
             iou_thres=iou_thres,
             apply_nms=not defer_nms,
             class_agnostic=class_agnostic,
@@ -202,6 +210,7 @@ class RoiAttrExperimentModel(nn.Module):
             if defer_nms:
                 return self._post_relabel_nms(
                     decoded,
+                    conf_thres=conf_thres,
                     iou_thres=iou_thres,
                     max_det=max_det,
                     class_agnostic=class_agnostic,
@@ -236,6 +245,7 @@ class RoiAttrExperimentModel(nn.Module):
         if defer_nms:
             decoded = self._post_relabel_nms(
                 decoded,
+                conf_thres=conf_thres,
                 iou_thres=iou_thres,
                 max_det=max_det,
                 class_agnostic=class_agnostic,

@@ -83,7 +83,11 @@ class RoiAttributeLoss(nn.Module):
         total = loss_emotion + loss_action
         loss_breed = total.new_zeros(())
 
-        if self.with_breed_head and "breed_logits" in roi_outputs:
+        if self.with_breed_head:
+            if "breed_logits" not in roi_outputs:
+                raise ValueError(
+                    "RoiAttributeLoss(with_breed_head=True) requires roi_outputs['breed_logits']"
+                )
             target_breed = self._gather(targets, batch_idx, obj_idx, "labels")
             loss_breed = self._masked_ce(roi_outputs["breed_logits"], target_breed)
             total = total + loss_breed
