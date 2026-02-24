@@ -145,7 +145,11 @@ class RoiAttrExperimentModel(nn.Module):
 
         emo_idx = torch.argmax(roi_out["emotion_logits"], dim=1)
         act_idx = torch.argmax(roi_out["action_logits"], dim=1)
-        breed_idx = torch.argmax(roi_out["breed_logits"], dim=1) if "breed_logits" in roi_out else None
+        breed_idx = None
+        breed_conf = None
+        if "breed_logits" in roi_out:
+            breed_probs = torch.softmax(roi_out["breed_logits"], dim=1)
+            breed_conf, breed_idx = torch.max(breed_probs, dim=1)
 
         for ridx in range(roi_out["batch_indices"].shape[0]):
             b = int(roi_out["batch_indices"][ridx].item())
@@ -156,8 +160,12 @@ class RoiAttrExperimentModel(nn.Module):
             act_i = int(act_idx[ridx].item())
             decoded[b][o]["emotional"] = _safe_name(emotion_names, emo_i, "emotion")
             decoded[b][o]["action"] = _safe_name(action_names, act_i, "action")
-            if breed_idx is not None:
+            if breed_idx is not None and breed_conf is not None:
                 breed_i = int(breed_idx[ridx].item())
                 decoded[b][o]["label"] = _safe_name(breed_names, breed_i, "class")
+                roi_breed_conf = float(breed_conf[ridx].item())
+                decoded[b][o]["breed_confidence"] = round(roi_breed_conf, 6)
+                obj_score = float(decoded[b][o].get("objectness", 1.0))
+                decoded[b][o]["confidence"] = round(obj_score * roi_breed_conf, 6)
 
         return decoded
