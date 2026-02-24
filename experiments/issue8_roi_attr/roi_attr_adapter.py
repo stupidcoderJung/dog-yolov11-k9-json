@@ -150,6 +150,7 @@ class RoiAttrExperimentModel(nn.Module):
         max_det: int = 300,
     ) -> List[List[Dict[str, Any]]]:
         preds, features = self.detector(images, return_features=True)
+        defer_nms = self.roi_head.num_breeds is not None
         decoded = decode_dog_predictions(
             preds,
             image_size=(int(images.shape[-2]), int(images.shape[-1])),
@@ -159,7 +160,7 @@ class RoiAttrExperimentModel(nn.Module):
             obj_thres=obj_thres,
             conf_thres=conf_thres,
             iou_thres=iou_thres,
-            apply_nms=True,
+            apply_nms=not defer_nms,
             class_agnostic=class_agnostic,
             max_det=max_det,
         )
@@ -198,6 +199,13 @@ class RoiAttrExperimentModel(nn.Module):
             image_size=(int(images.shape[-2]), int(images.shape[-1])),
         )
         if roi_out["emotion_logits"].shape[0] == 0:
+            if defer_nms:
+                return self._post_relabel_nms(
+                    decoded,
+                    iou_thres=iou_thres,
+                    max_det=max_det,
+                    class_agnostic=class_agnostic,
+                )
             return decoded
 
         emo_idx = torch.argmax(roi_out["emotion_logits"], dim=1)
@@ -225,7 +233,7 @@ class RoiAttrExperimentModel(nn.Module):
                 obj_score = float(decoded[b][o].get("objectness", 1.0))
                 decoded[b][o]["confidence"] = round(obj_score * roi_breed_conf, 6)
 
-        if breed_idx is not None:
+        if defer_nms:
             decoded = self._post_relabel_nms(
                 decoded,
                 iou_thres=iou_thres,
