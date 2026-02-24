@@ -57,6 +57,7 @@ python3 experiments/issue8_roi_attr/smoke_roi_attr.py \
   --with-breed-head \
   --roi-output-size 5 \
   --roi-hidden-dim 192
+```
 
 추론 경로 데모:
 
@@ -65,7 +66,6 @@ python3 experiments/issue8_roi_attr/infer_roi_attr_demo.py \
   --roi-fusion concat \
   --obj-thres 0.01 \
   --conf-thres 0.01
-```
 ```
 
 ## 실험 축
