@@ -9,6 +9,12 @@ from dog_yolov11 import DogYOLOv11, decode_dog_predictions
 from experiments.issue8_roi_attr.roi_attr_head import DogRoiAttrHead
 
 
+def _safe_name(names: Sequence[str], idx: int, prefix: str) -> str:
+    if 0 <= idx < len(names):
+        return names[idx]
+    return f"{prefix}_{idx}"
+
+
 class DogYoloWithFeatures(nn.Module):
     """
     Non-invasive adapter: returns (preds, features) without changing DogYOLOv11 source.
@@ -146,9 +152,12 @@ class RoiAttrExperimentModel(nn.Module):
             o = int(roi_out["object_indices"][ridx].item())
             if b >= len(decoded) or o >= len(decoded[b]):
                 continue
-            decoded[b][o]["emotional"] = emotion_names[int(emo_idx[ridx].item())]
-            decoded[b][o]["action"] = action_names[int(act_idx[ridx].item())]
+            emo_i = int(emo_idx[ridx].item())
+            act_i = int(act_idx[ridx].item())
+            decoded[b][o]["emotional"] = _safe_name(emotion_names, emo_i, "emotion")
+            decoded[b][o]["action"] = _safe_name(action_names, act_i, "action")
             if breed_idx is not None:
-                decoded[b][o]["label"] = breed_names[int(breed_idx[ridx].item())]
+                breed_i = int(breed_idx[ridx].item())
+                decoded[b][o]["label"] = _safe_name(breed_names, breed_i, "class")
 
         return decoded
