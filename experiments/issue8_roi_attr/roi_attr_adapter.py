@@ -134,6 +134,8 @@ class RoiAttrExperimentModel(nn.Module):
             head_valid=head_valid,
             image_size=(int(images.shape[-2]), int(images.shape[-1])),
         )
+        if roi_out["emotion_logits"].shape[0] == 0:
+            return decoded
 
         emo_idx = torch.argmax(roi_out["emotion_logits"], dim=1)
         act_idx = torch.argmax(roi_out["action_logits"], dim=1)

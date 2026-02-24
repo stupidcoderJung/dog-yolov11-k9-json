@@ -110,16 +110,19 @@ class DogRoiAttrHead(nn.Module):
             self.breed_head = nn.Linear(self.hidden_dim, self.num_breeds)
 
     def _assign_levels(self, boxes_xyxy: torch.Tensor) -> torch.Tensor:
-        """Assign ROI levels by sqrt(area) in image pixels."""
+        """Assign ROI levels from ROI scale to nearest configured feature stride."""
+        if boxes_xyxy.numel() == 0:
+            return torch.zeros((0,), dtype=torch.long, device=boxes_xyxy.device)
+
         w = (boxes_xyxy[:, 2] - boxes_xyxy[:, 0]).clamp(min=1.0)
         h = (boxes_xyxy[:, 3] - boxes_xyxy[:, 1]).clamp(min=1.0)
         scale = torch.sqrt(w * h)
 
-        # Simple FPN-like bucketization for stride (8,16,32).
-        levels = torch.zeros_like(scale, dtype=torch.long)
-        levels[scale >= 96.0] = 1
-        levels[scale >= 192.0] = 2
-        return levels.clamp_(0, len(self.feature_strides) - 1)
+        # Map object scale to stride domain and choose nearest stride level.
+        strides = torch.tensor(self.feature_strides, dtype=scale.dtype, device=scale.device)
+        target_stride = (scale / 8.0).clamp(min=float(strides.min().item()), max=float(strides.max().item()))
+        dist = torch.abs(torch.log2(target_stride[:, None]) - torch.log2(strides[None, :]))
+        return torch.argmin(dist, dim=1)
 
     def _flatten_rois(
         self,
