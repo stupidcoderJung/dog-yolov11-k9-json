@@ -159,6 +159,9 @@ class RoiAttrExperimentModel(nn.Module):
         defer_nms = self.roi_head.num_breeds is not None
         # When ROI breed relabel is enabled, keep detector candidates until ROI pass.
         decode_conf_thres = 0.0 if defer_nms else conf_thres
+        decode_max_det = max_det
+        if defer_nms:
+            decode_max_det = int(sum(int(p.shape[1]) * int(p.shape[2]) for p in preds))
         decoded = decode_dog_predictions(
             preds,
             image_size=(int(images.shape[-2]), int(images.shape[-1])),
@@ -170,7 +173,7 @@ class RoiAttrExperimentModel(nn.Module):
             iou_thres=iou_thres,
             apply_nms=not defer_nms,
             class_agnostic=class_agnostic,
-            max_det=max_det,
+            max_det=decode_max_det,
         )
 
         body_boxes: List[torch.Tensor] = []

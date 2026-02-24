@@ -182,18 +182,14 @@ class DogRoiAttrHead(nn.Module):
             )
 
         levels = self._assign_levels(rois[:, 1:5])
-        k = rois.shape[0]
-        c = projected[0].shape[1]
-        out = torch.zeros(
-            (k, c, self.roi_output_size, self.roi_output_size),
-            dtype=projected[0].dtype,
-            device=projected[0].device,
-        )
+        feat_parts: List[torch.Tensor] = []
+        idx_parts: List[torch.Tensor] = []
 
         for lvl in range(len(projected)):
             mask = levels == lvl
             if not torch.any(mask):
                 continue
+            lvl_idx = torch.where(mask)[0]
             roi_lvl = rois[mask]
             feat_lvl = roi_align(
                 projected[lvl],
@@ -202,8 +198,21 @@ class DogRoiAttrHead(nn.Module):
                 spatial_scale=1.0 / float(self.feature_strides[lvl]),
                 aligned=True,
             )
-            out[mask] = feat_lvl
-        return out
+            idx_parts.append(lvl_idx)
+            feat_parts.append(feat_lvl)
+
+        if not feat_parts:
+            c = projected[0].shape[1]
+            return torch.zeros(
+                (0, c, self.roi_output_size, self.roi_output_size),
+                dtype=projected[0].dtype,
+                device=projected[0].device,
+            )
+
+        all_idx = torch.cat(idx_parts, dim=0)
+        all_feat = torch.cat(feat_parts, dim=0)
+        order = torch.argsort(all_idx)
+        return all_feat[order]
 
     def forward(
         self,
