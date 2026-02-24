@@ -523,6 +523,7 @@ def decode_dog_predictions(
     apply_nms: bool = True,
     class_agnostic: bool = False,
     max_det: int = 300,
+    include_raw_boxes: bool = False,
 ) -> List[List[Dict[str, Any]]]:
     """
     Decode model raw outputs to JSON-like records:
@@ -619,6 +620,8 @@ def decode_dog_predictions(
                     "objectness": round(obj_score, 6),
                     "breed_confidence": round(cls_score, 6),
                 }
+                if include_raw_boxes:
+                    record["_body_xyxy"] = [float(x1), float(y1), float(x2), float(y2)]
                 results[b].append((score, breed_idx, [x1, y1, x2, y2], record))
 
     out: List[List[Dict[str, Any]]] = []

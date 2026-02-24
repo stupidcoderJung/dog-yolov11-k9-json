@@ -99,7 +99,7 @@ class RoiAttrExperimentModel(nn.Module):
                 continue
 
             boxes = torch.tensor(
-                [rec.get("bodybndbox", [0, 0, 0, 0]) for rec in filtered],
+                [rec.get("_body_xyxy", rec.get("bodybndbox", [0, 0, 0, 0])) for rec in filtered],
                 dtype=torch.float32,
             )
             scores = torch.tensor(
@@ -141,6 +141,14 @@ class RoiAttrExperimentModel(nn.Module):
             out.append(kept_records)
         return out
 
+    def _strip_internal_fields(
+        self, decoded: List[List[Dict[str, Any]]]
+    ) -> List[List[Dict[str, Any]]]:
+        for per_img in decoded:
+            for rec in per_img:
+                rec.pop("_body_xyxy", None)
+        return decoded
+
     @torch.no_grad()
     def infer_with_roi_attributes(
         self,
@@ -174,6 +182,7 @@ class RoiAttrExperimentModel(nn.Module):
             apply_nms=not defer_nms,
             class_agnostic=class_agnostic,
             max_det=decode_max_det,
+            include_raw_boxes=defer_nms,
         )
 
         body_boxes: List[torch.Tensor] = []
@@ -211,14 +220,16 @@ class RoiAttrExperimentModel(nn.Module):
         )
         if roi_out["emotion_logits"].shape[0] == 0:
             if defer_nms:
-                return self._post_relabel_nms(
-                    decoded,
-                    conf_thres=conf_thres,
-                    iou_thres=iou_thres,
-                    max_det=max_det,
-                    class_agnostic=class_agnostic,
+                return self._strip_internal_fields(
+                    self._post_relabel_nms(
+                        decoded,
+                        conf_thres=conf_thres,
+                        iou_thres=iou_thres,
+                        max_det=max_det,
+                        class_agnostic=class_agnostic,
+                    )
                 )
-            return decoded
+            return self._strip_internal_fields(decoded)
 
         emo_idx = torch.argmax(roi_out["emotion_logits"], dim=1)
         act_idx = torch.argmax(roi_out["action_logits"], dim=1)
@@ -254,4 +265,4 @@ class RoiAttrExperimentModel(nn.Module):
                 class_agnostic=class_agnostic,
             )
 
-        return decoded
+        return self._strip_internal_fields(decoded)
