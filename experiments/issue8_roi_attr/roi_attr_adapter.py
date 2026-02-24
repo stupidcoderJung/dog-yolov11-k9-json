@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 import torch.nn as nn
 
-from dog_yolov11 import DogYOLOv11, decode_dog_predictions
+from dog_yolov11 import DogYOLOv11, decode_dog_predictions, nms_keep_indices
 from experiments.issue8_roi_attr.roi_attr_head import DogRoiAttrHead
 
 
@@ -76,6 +76,63 @@ class RoiAttrExperimentModel(nn.Module):
                 image_size=(int(images.shape[-2]), int(images.shape[-1])),
             )
 
+        return out
+
+    def _post_relabel_nms(
+        self,
+        decoded: List[List[Dict[str, Any]]],
+        *,
+        iou_thres: float,
+        max_det: int,
+        class_agnostic: bool,
+    ) -> List[List[Dict[str, Any]]]:
+        out: List[List[Dict[str, Any]]] = []
+        for per_img in decoded:
+            if not per_img:
+                out.append([])
+                continue
+
+            boxes = torch.tensor(
+                [rec.get("bodybndbox", [0, 0, 0, 0]) for rec in per_img],
+                dtype=torch.float32,
+            )
+            scores = torch.tensor(
+                [float(rec.get("confidence", 0.0)) for rec in per_img],
+                dtype=torch.float32,
+            )
+
+            if class_agnostic:
+                keep = nms_keep_indices(boxes, scores, iou_thres=iou_thres)
+            else:
+                label_to_id: Dict[str, int] = {}
+                class_ids: List[int] = []
+                for rec in per_img:
+                    label = str(rec.get("label", ""))
+                    if label not in label_to_id:
+                        label_to_id[label] = len(label_to_id)
+                    class_ids.append(label_to_id[label])
+                class_ids_t = torch.tensor(class_ids, dtype=torch.long)
+
+                keep_parts: List[torch.Tensor] = []
+                for cls in class_ids_t.unique():
+                    cls_idx = torch.where(class_ids_t == cls)[0]
+                    cls_keep = nms_keep_indices(
+                        boxes[cls_idx], scores[cls_idx], iou_thres=iou_thres
+                    )
+                    keep_parts.append(cls_idx[cls_keep])
+                keep = (
+                    torch.cat(keep_parts, dim=0)
+                    if keep_parts
+                    else torch.zeros((0,), dtype=torch.long)
+                )
+
+            kept_records = [per_img[i] for i in keep.tolist()]
+            kept_records = sorted(
+                kept_records,
+                key=lambda rec: float(rec.get("confidence", 0.0)),
+                reverse=True,
+            )[:max_det]
+            out.append(kept_records)
         return out
 
     @torch.no_grad()
@@ -167,5 +224,13 @@ class RoiAttrExperimentModel(nn.Module):
                 decoded[b][o]["breed_confidence"] = round(roi_breed_conf, 6)
                 obj_score = float(decoded[b][o].get("objectness", 1.0))
                 decoded[b][o]["confidence"] = round(obj_score * roi_breed_conf, 6)
+
+        if breed_idx is not None:
+            decoded = self._post_relabel_nms(
+                decoded,
+                iou_thres=iou_thres,
+                max_det=max_det,
+                class_agnostic=class_agnostic,
+            )
 
         return decoded
