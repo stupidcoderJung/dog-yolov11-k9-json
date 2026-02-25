@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Tuple
-
 import torch
 import torch.nn.functional as F
 
@@ -51,13 +49,18 @@ def fit_binary_temperature(
     targets: 1 if prediction is correct else 0
     """
     probs = _to_prob_tensor(probabilities)
-    y = _to_target_tensor(targets)
+    y = _to_target_tensor(targets).to(device=probs.device)
     if probs.numel() != y.numel():
         raise ValueError("probabilities and targets must have the same length")
     if probs.numel() == 0:
         return 1.0
 
-    log_t = torch.tensor(0.0, dtype=torch.float32, requires_grad=True)
+    log_t = torch.tensor(
+        0.0,
+        dtype=torch.float32,
+        device=probs.device,
+        requires_grad=True,
+    )
     optimizer = torch.optim.LBFGS(
         [log_t],
         lr=0.1,
@@ -86,14 +89,20 @@ def expected_calibration_error(
     n_bins: int = 15,
 ) -> float:
     probs = _to_prob_tensor(probabilities)
-    y = _to_target_tensor(targets)
+    y = _to_target_tensor(targets).to(device=probs.device)
     if probs.numel() != y.numel():
         raise ValueError("probabilities and targets must have the same length")
     if probs.numel() == 0:
         return 0.0
 
     n_bins = max(1, int(n_bins))
-    bin_edges = torch.linspace(0.0, 1.0, n_bins + 1)
+    bin_edges = torch.linspace(
+        0.0,
+        1.0,
+        n_bins + 1,
+        dtype=probs.dtype,
+        device=probs.device,
+    )
     ece = probs.new_zeros(())
 
     for i in range(n_bins):
@@ -117,7 +126,7 @@ def brier_score(
     targets: torch.Tensor | list[int] | list[bool],
 ) -> float:
     probs = _to_prob_tensor(probabilities)
-    y = _to_target_tensor(targets)
+    y = _to_target_tensor(targets).to(device=probs.device)
     if probs.numel() != y.numel():
         raise ValueError("probabilities and targets must have the same length")
     if probs.numel() == 0:
