@@ -204,10 +204,6 @@ class RoiV2HybridExperimentModel(nn.Module):
             include_raw_boxes=defer_nms,
         )
 
-        if not defer_nms:
-            self._attach_score_components(decoded)
-            return self._strip_internal_fields(decoded)
-
         body_boxes: List[torch.Tensor] = []
         head_boxes: List[torch.Tensor] = []
         head_valid: List[torch.Tensor] = []
@@ -272,11 +268,12 @@ class RoiV2HybridExperimentModel(nn.Module):
                     decoded[b][o]["breed_confidence"] = float(breed_conf[ridx].item())
 
         self._attach_score_components(decoded)
-        decoded = self._post_relabel_nms(
-            decoded,
-            conf_thres=conf_thres,
-            iou_thres=iou_thres,
-            max_det=max_det,
-            class_agnostic=class_agnostic,
-        )
+        if defer_nms:
+            decoded = self._post_relabel_nms(
+                decoded,
+                conf_thres=conf_thres,
+                iou_thres=iou_thres,
+                max_det=max_det,
+                class_agnostic=class_agnostic,
+            )
         return self._strip_internal_fields(decoded)

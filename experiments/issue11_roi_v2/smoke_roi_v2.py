@@ -86,7 +86,11 @@ def main() -> int:
     parser.add_argument("--roi-hidden-dim", type=int, default=192)
     parser.add_argument("--roi-fusion", type=str, default="concat", choices=["concat", "xattn"])
     parser.add_argument("--roi-use-multiscale", action="store_true")
-    parser.add_argument("--with-breed-head", action="store_true", default=True)
+    parser.add_argument(
+        "--with-breed-head",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--lambda-attr-grid", type=float, default=0.35)
     parser.add_argument("--lambda-attr-roi", type=float, default=1.0)
     parser.add_argument(
