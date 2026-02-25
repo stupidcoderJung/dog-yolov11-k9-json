@@ -153,22 +153,6 @@ class RoiV2HybridExperimentModel(nn.Module):
                 rec.pop("_body_xyxy", None)
         return decoded
 
-    def _filter_by_confidence(
-        self,
-        decoded: List[List[Dict[str, Any]]],
-        *,
-        conf_thres: float,
-    ) -> List[List[Dict[str, Any]]]:
-        out: List[List[Dict[str, Any]]] = []
-        for per_img in decoded:
-            kept = [
-                rec
-                for rec in per_img
-                if float(rec.get("confidence", 0.0)) >= float(conf_thres)
-            ]
-            out.append(kept)
-        return out
-
     def _attach_score_components(self, decoded: List[List[Dict[str, Any]]]) -> None:
         for per_img in decoded:
             for rec in per_img:
@@ -200,10 +184,8 @@ class RoiV2HybridExperimentModel(nn.Module):
         preds, features = self.detector(images, return_features=True)
 
         defer_nms = self.roi_head.num_breeds is not None
-        decode_conf_thres = 0.0 if defer_nms else conf_thres
-        decode_max_det = max_det
-        if defer_nms:
-            decode_max_det = int(sum(int(p.shape[1]) * int(p.shape[2]) for p in preds))
+        decode_conf_thres = 0.0
+        decode_max_det = int(sum(int(p.shape[1]) * int(p.shape[2]) for p in preds))
 
         decoded = decode_dog_predictions(
             preds,
@@ -214,10 +196,10 @@ class RoiV2HybridExperimentModel(nn.Module):
             obj_thres=obj_thres,
             conf_thres=decode_conf_thres,
             iou_thres=iou_thres,
-            apply_nms=not defer_nms,
+            apply_nms=False,
             class_agnostic=class_agnostic,
             max_det=decode_max_det,
-            include_raw_boxes=defer_nms,
+            include_raw_boxes=True,
         )
 
         body_boxes: List[torch.Tensor] = []
@@ -284,14 +266,11 @@ class RoiV2HybridExperimentModel(nn.Module):
                     decoded[b][o]["breed_confidence"] = float(breed_conf[ridx].item())
 
         self._attach_score_components(decoded)
-        if defer_nms:
-            decoded = self._post_relabel_nms(
-                decoded,
-                conf_thres=conf_thres,
-                iou_thres=iou_thres,
-                max_det=max_det,
-                class_agnostic=class_agnostic,
-            )
-        else:
-            decoded = self._filter_by_confidence(decoded, conf_thres=conf_thres)
+        decoded = self._post_relabel_nms(
+            decoded,
+            conf_thres=conf_thres,
+            iou_thres=iou_thres,
+            max_det=max_det,
+            class_agnostic=class_agnostic,
+        )
         return self._strip_internal_fields(decoded)
