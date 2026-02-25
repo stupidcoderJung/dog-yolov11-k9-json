@@ -200,11 +200,12 @@ class RoiV2HybridExperimentModel(nn.Module):
         preds, features = self.detector(images, return_features=True)
 
         defer_nms = self.roi_head.num_breeds is not None
+        needs_policy_deferred_prune = (not defer_nms) and self.score_policy != "obj_x_breed"
         decode_conf_thres = 0.0
         decode_apply_nms = not defer_nms
         decode_max_det = max_det
         decode_include_raw_boxes = False
-        if defer_nms:
+        if defer_nms or needs_policy_deferred_prune:
             decode_apply_nms = False
             decode_max_det = int(sum(int(p.shape[1]) * int(p.shape[2]) for p in preds))
             decode_include_raw_boxes = True
@@ -288,7 +289,7 @@ class RoiV2HybridExperimentModel(nn.Module):
                     decoded[b][o]["breed_confidence"] = float(breed_conf[ridx].item())
 
         self._attach_score_components(decoded)
-        if defer_nms:
+        if defer_nms or needs_policy_deferred_prune:
             decoded = self._post_relabel_nms(
                 decoded,
                 conf_thres=conf_thres,
