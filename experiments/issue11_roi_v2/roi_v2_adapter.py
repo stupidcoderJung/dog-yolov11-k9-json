@@ -203,7 +203,7 @@ class RoiV2HybridExperimentModel(nn.Module):
         needs_policy_deferred_prune = (not defer_nms) and self.score_policy != "obj_x_breed"
         decode_conf_thres = conf_thres if (not defer_nms and not needs_policy_deferred_prune) else 0.0
         decode_obj_thres = obj_thres
-        if needs_policy_deferred_prune and self.score_policy == "breed_only":
+        if self.score_policy == "breed_only":
             decode_obj_thres = 0.0
         decode_apply_nms = not defer_nms
         decode_max_det = max_det
