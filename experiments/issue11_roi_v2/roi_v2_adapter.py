@@ -153,6 +153,22 @@ class RoiV2HybridExperimentModel(nn.Module):
                 rec.pop("_body_xyxy", None)
         return decoded
 
+    def _filter_by_confidence(
+        self,
+        decoded: List[List[Dict[str, Any]]],
+        *,
+        conf_thres: float,
+    ) -> List[List[Dict[str, Any]]]:
+        out: List[List[Dict[str, Any]]] = []
+        for per_img in decoded:
+            kept = [
+                rec
+                for rec in per_img
+                if float(rec.get("confidence", 0.0)) >= float(conf_thres)
+            ]
+            out.append(kept)
+        return out
+
     def _attach_score_components(self, decoded: List[List[Dict[str, Any]]]) -> None:
         for per_img in decoded:
             for rec in per_img:
@@ -276,4 +292,6 @@ class RoiV2HybridExperimentModel(nn.Module):
                 max_det=max_det,
                 class_agnostic=class_agnostic,
             )
+        else:
+            decoded = self._filter_by_confidence(decoded, conf_thres=conf_thres)
         return self._strip_internal_fields(decoded)
