@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dog_yolov11 import DogYOLOv11
-from experiments.issue8_roi_attr.roi_attr_head import DogRoiAttrHead
+from experiments.issue11_roi_v2.roi_attr_head import DogRoiAttrHead
 from experiments.issue11_roi_v2.roi_v2_adapter import RoiV2HybridExperimentModel
 
 

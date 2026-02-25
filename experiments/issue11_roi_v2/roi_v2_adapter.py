@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 
 from dog_yolov11 import decode_dog_predictions, nms_keep_indices
-from experiments.issue8_roi_attr.roi_attr_adapter import DogYoloWithFeatures
-from experiments.issue8_roi_attr.roi_attr_head import DogRoiAttrHead
+from experiments.issue11_roi_v2.roi_attr_adapter import DogYoloWithFeatures
+from experiments.issue11_roi_v2.roi_attr_head import DogRoiAttrHead
 from experiments.issue11_roi_v2.calibration import apply_temperature_to_probability
 
 

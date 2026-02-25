@@ -6,6 +6,10 @@
 
 ## 파일 구성
 
+- `roi_attr_head.py`, `roi_attr_loss.py`, `roi_attr_adapter.py`
+  - `experiments/issue8_roi_attr`의 베이스를 issue11 디렉터리로 복사해 독립화
+  - issue11 실험은 이 로컬 복사본을 기준으로 확장
+
 - `roi_v2_adapter.py`
   - `RoiV2HybridExperimentModel`
   - detector + ROI attribute head 결합
@@ -51,5 +55,5 @@ python3 experiments/issue11_roi_v2/infer_roi_v2_demo.py \
 
 ## 참고
 
-- ROI head/loss는 `experiments/issue8_roi_attr` 모듈을 재사용합니다.
+- issue11은 issue8 베이스 코드를 로컬 복사본으로 포함합니다(직접 import 의존 제거).
 - 본 디렉터리는 실험용이므로, 학습 파이프라인 본선 통합 전 검증 단계에 사용합니다.
