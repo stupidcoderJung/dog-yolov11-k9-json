@@ -22,17 +22,35 @@ class CascadedBodyHeadDetector(nn.Module):
     - Stage 2: Detect head boxes within body ROIs
     """
 
-    def __init__(self, num_queries: int = 10, backbone_type: str = 'resnet18', use_pretrained: bool = False):
+    def __init__(self, num_queries: int = 10, backbone_type: str = 'tiny48', use_pretrained: bool = False):
         super().__init__()
         self.num_queries = num_queries
 
-        # Backbone: ResNet18 (pretrained)
+        # Backbone
         if backbone_type == 'resnet18':
             weights = ResNet18_Weights.DEFAULT if use_pretrained else None
             resnet = resnet18(weights=weights)
-            # Remove FC layer
             self.backbone = nn.Sequential(*list(resnet.children())[:-2])  # Up to avgpool
             self.feature_dim = 512
+        elif backbone_type == 'tiny48':
+            # Smaller backbone for edge deployment.
+            self.backbone = nn.Sequential(
+                nn.Conv2d(3, 16, 3, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(16),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+                nn.Conv2d(16, 32, 3, stride=1, padding=1, bias=False),
+                nn.BatchNorm2d(32),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(32, 48, 3, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(48),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(48, 48, 3, stride=1, padding=1, bias=False),
+                nn.BatchNorm2d(48),
+                nn.ReLU(inplace=True),
+                nn.Dropout2d(p=0.10),
+            )
+            self.feature_dim = 48
         else:
             raise ValueError(f"Unsupported backbone: {backbone_type}")
 
