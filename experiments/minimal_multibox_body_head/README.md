@@ -58,6 +58,7 @@ loss_dict = multibox_body_head_loss(
     box_smooth_l1_beta=0.1,  # stronger box gradients for normalized coordinates
     match_w_iou=2.0,         # bias matcher toward overlap quality
     match_w_obj=0.05,        # keep objectness from overpowering box matching
+    validate_targets=True,   # range/format sanity stats for GT
 )
 
 total_loss = loss_dict["total"]
@@ -78,3 +79,4 @@ print(
 ```
 
 Set `debug=True` to print per-image matched counts and box absolute error means.
+Set `strict_target_check=True` to raise an error immediately if GT boxes are outside [0,1] or invalid as `cxcywh`.

@@ -35,6 +35,33 @@ def xyxy_iou(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return inter / union
 
 
+def cxcywh_box_stats(boxes: torch.Tensor):
+    """
+    Quick sanity stats for normalized cxcywh boxes.
+    """
+    if boxes.numel() == 0:
+        return {
+            "min": 0.0,
+            "max": 0.0,
+            "in_01_ratio": 1.0,
+            "positive_wh_ratio": 1.0,
+            "valid_xyxy_ratio": 1.0,
+        }
+
+    xyxy = cxcywh_to_xyxy(boxes)
+    x1, y1, x2, y2 = xyxy.unbind(-1)
+    in_01 = ((boxes >= 0.0) & (boxes <= 1.0)).all(dim=-1).float().mean()
+    positive_wh = ((boxes[..., 2] > 0.0) & (boxes[..., 3] > 0.0)).float().mean()
+    valid_xyxy = ((x2 > x1) & (y2 > y1)).float().mean()
+    return {
+        "min": float(boxes.min().item()),
+        "max": float(boxes.max().item()),
+        "in_01_ratio": float(in_01.item()),
+        "positive_wh_ratio": float(positive_wh.item()),
+        "valid_xyxy_ratio": float(valid_xyxy.item()),
+    }
+
+
 @torch.no_grad()
 def greedy_match(
     pred_body_boxes: torch.Tensor,
@@ -155,6 +182,8 @@ def multibox_body_head_loss(
     normalize_by: str = "matched",
     return_details: bool = False,
     debug: bool = False,
+    validate_targets: bool = False,
+    strict_target_check: bool = False,
 ):
     """
     targets: list of dict, len B
@@ -191,6 +220,11 @@ def multibox_body_head_loss(
     total_neg_obj = pred_logits.new_tensor(0.0)
     total_neg = 0
     matched_per_image = []
+    target_images_checked = 0
+    sum_body_in_01 = 0.0
+    sum_head_in_01 = 0.0
+    sum_body_valid_xyxy = 0.0
+    sum_head_valid_xyxy = 0.0
 
     for batch_idx in range(batch_size):
         gt_body = targets[batch_idx]["body_boxes"].to(
@@ -203,6 +237,50 @@ def multibox_body_head_loss(
         )
         if gt_body.shape[0] != gt_head.shape[0]:
             raise ValueError("body_boxes and head_boxes must have the same number of boxes per image")
+
+        if validate_targets or strict_target_check or debug:
+            body_stats = cxcywh_box_stats(gt_body)
+            head_stats = cxcywh_box_stats(gt_head)
+
+            if validate_targets:
+                target_images_checked += 1
+                sum_body_in_01 += body_stats["in_01_ratio"]
+                sum_head_in_01 += head_stats["in_01_ratio"]
+                sum_body_valid_xyxy += body_stats["valid_xyxy_ratio"]
+                sum_head_valid_xyxy += head_stats["valid_xyxy_ratio"]
+
+            if strict_target_check:
+                if (
+                    body_stats["in_01_ratio"] < 1.0
+                    or body_stats["positive_wh_ratio"] < 1.0
+                    or body_stats["valid_xyxy_ratio"] < 1.0
+                ):
+                    raise ValueError(
+                        f"invalid body_boxes at batch index {batch_idx}: "
+                        f"min={body_stats['min']:.4f}, max={body_stats['max']:.4f}, "
+                        f"in_01={body_stats['in_01_ratio']:.3f}, "
+                        f"positive_wh={body_stats['positive_wh_ratio']:.3f}, "
+                        f"valid_xyxy={body_stats['valid_xyxy_ratio']:.3f}"
+                    )
+                if (
+                    head_stats["in_01_ratio"] < 1.0
+                    or head_stats["positive_wh_ratio"] < 1.0
+                    or head_stats["valid_xyxy_ratio"] < 1.0
+                ):
+                    raise ValueError(
+                        f"invalid head_boxes at batch index {batch_idx}: "
+                        f"min={head_stats['min']:.4f}, max={head_stats['max']:.4f}, "
+                        f"in_01={head_stats['in_01_ratio']:.3f}, "
+                        f"positive_wh={head_stats['positive_wh_ratio']:.3f}, "
+                        f"valid_xyxy={head_stats['valid_xyxy_ratio']:.3f}"
+                    )
+            if debug:
+                print(
+                    f"[multibox debug] img={batch_idx} gt_body[min,max]=({body_stats['min']:.4f},{body_stats['max']:.4f}) "
+                    f"gt_head[min,max]=({head_stats['min']:.4f},{head_stats['max']:.4f}) "
+                    f"body_in01={body_stats['in_01_ratio']:.3f} head_in01={head_stats['in_01_ratio']:.3f} "
+                    f"body_valid_xyxy={body_stats['valid_xyxy_ratio']:.3f} head_valid_xyxy={head_stats['valid_xyxy_ratio']:.3f}"
+                )
 
         matched_q, matched_m = greedy_match(
             pred_body_boxes[batch_idx],
@@ -296,7 +374,7 @@ def multibox_body_head_loss(
     if return_details:
         matched_norm = max(total_matched, 1)
         coord_norm = max(total_matched * 4, 1)
-        return {
+        details = {
             "total": total_loss,
             "obj": obj_loss,
             "body": body_loss,
@@ -318,6 +396,15 @@ def multibox_body_head_loss(
                 "obj": match_w_obj,
             },
         }
+        if validate_targets and target_images_checked > 0:
+            details["target_stats"] = {
+                "checked_images": target_images_checked,
+                "mean_body_in_01_ratio": sum_body_in_01 / target_images_checked,
+                "mean_head_in_01_ratio": sum_head_in_01 / target_images_checked,
+                "mean_body_valid_xyxy_ratio": sum_body_valid_xyxy / target_images_checked,
+                "mean_head_valid_xyxy_ratio": sum_head_valid_xyxy / target_images_checked,
+            }
+        return details
     return total_loss
 
 
@@ -373,7 +460,13 @@ if __name__ == "__main__":
     ]
 
     outputs = model(x)
-    loss_dict = multibox_body_head_loss(outputs, targets, return_details=True, debug=True)
+    loss_dict = multibox_body_head_loss(
+        outputs,
+        targets,
+        return_details=True,
+        debug=True,
+        validate_targets=True,
+    )
     loss = loss_dict["total"]
     loss.backward()
     print("loss:", loss.item())
@@ -393,6 +486,7 @@ if __name__ == "__main__":
             "neg_obj": float(loss_dict["mean_neg_obj_prob"]),
         },
     )
+    print("target_stats:", loss_dict.get("target_stats"))
 
     preds = infer(outputs, conf_thresh=0.3)
     print("pred counts:", [pred["body_boxes_xyxy"].shape[0] for pred in preds])
