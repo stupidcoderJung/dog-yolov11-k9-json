@@ -68,22 +68,15 @@ def greedy_match(
     obj = pred_logits.sigmoid().clamp(1e-6, 1.0 - 1e-6)
     cost = cost + (-torch.log(obj))[:, None] * 0.25
 
-    pairs = torch.stack(
-        torch.meshgrid(
-            torch.arange(q_count, device=pred_body_boxes.device),
-            torch.arange(m_count, device=pred_body_boxes.device),
-            indexing="ij",
-        ),
-        dim=-1,
-    ).view(-1, 2)
-
-    order = torch.argsort(cost.view(-1))
+    order = torch.argsort(cost.reshape(-1))
     used_q = torch.zeros(q_count, dtype=torch.bool, device=pred_body_boxes.device)
     used_m = torch.zeros(m_count, dtype=torch.bool, device=pred_body_boxes.device)
 
     matched_q, matched_m = [], []
-    for idx in order:
-        q_idx, m_idx = pairs[idx].tolist()
+    for flat_idx in order:
+        flat = int(flat_idx)
+        q_idx = flat // m_count
+        m_idx = flat % m_count
         if used_q[q_idx] or used_m[m_idx]:
             continue
         used_q[q_idx] = True
@@ -174,6 +167,8 @@ def multibox_body_head_loss(
     for batch_idx in range(batch_size):
         gt_body = targets[batch_idx]["body_boxes"].to(pred_body_boxes.device)
         gt_head = targets[batch_idx]["head_boxes"].to(pred_head_boxes.device)
+        if gt_body.shape[0] != gt_head.shape[0]:
+            raise ValueError("body_boxes and head_boxes must have the same number of boxes per image")
 
         matched_q, matched_m = greedy_match(
             pred_body_boxes[batch_idx],
@@ -183,7 +178,7 @@ def multibox_body_head_loss(
             gt_head,
         )
 
-        obj_target = torch.zeros(query_count, device=pred_logits.device)
+        obj_target = torch.zeros(query_count, device=pred_logits.device, dtype=pred_logits.dtype)
         if matched_q.numel() > 0:
             obj_target[matched_q] = 1.0
         total_obj = total_obj + F.binary_cross_entropy_with_logits(pred_logits[batch_idx], obj_target)
@@ -259,7 +254,7 @@ if __name__ == "__main__":
     outputs = model(x)
     loss = multibox_body_head_loss(outputs, targets)
     loss.backward()
-    print("loss:", float(loss))
+    print("loss:", loss.item())
 
     preds = infer(outputs, conf_thresh=0.3)
     print("pred counts:", [pred["body_boxes_xyxy"].shape[0] for pred in preds])
