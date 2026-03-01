@@ -23,7 +23,7 @@ without transformer/attention.
 ## Run
 
 ```bash
-python experiments/minimal_multibox_body_head/minimal_body_head_multibox.py
+python3 experiments/minimal_multibox_body_head/minimal_body_head_multibox.py
 ```
 
 The script prints a sample loss and per-image prediction counts from a minimal forward/loss/infer flow.

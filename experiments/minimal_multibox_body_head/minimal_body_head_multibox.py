@@ -158,6 +158,10 @@ def multibox_body_head_loss(
     pred_head_boxes = outputs["pred_head_boxes"]
 
     batch_size, query_count = pred_logits.shape
+    if batch_size == 0:
+        raise ValueError("empty batch is not supported")
+    if len(targets) != batch_size:
+        raise ValueError(f"targets length ({len(targets)}) must equal batch size ({batch_size})")
 
     total_obj = 0.0
     total_body = 0.0
@@ -165,8 +169,14 @@ def multibox_body_head_loss(
     total_iou = 0.0
 
     for batch_idx in range(batch_size):
-        gt_body = targets[batch_idx]["body_boxes"].to(pred_body_boxes.device)
-        gt_head = targets[batch_idx]["head_boxes"].to(pred_head_boxes.device)
+        gt_body = targets[batch_idx]["body_boxes"].to(
+            device=pred_body_boxes.device,
+            dtype=pred_body_boxes.dtype,
+        )
+        gt_head = targets[batch_idx]["head_boxes"].to(
+            device=pred_head_boxes.device,
+            dtype=pred_head_boxes.dtype,
+        )
         if gt_body.shape[0] != gt_head.shape[0]:
             raise ValueError("body_boxes and head_boxes must have the same number of boxes per image")
 
