@@ -233,7 +233,21 @@ class BodyHeadSlotDetector(nn.Module):
         ).to(feat.dtype)
         head_feat = self.head_roi_backbone(roi_feat)
         pred_head_rel = self.head_box_head(head_feat.flatten(1)).sigmoid().view(bsz, self.num_queries, 4)
-        pred_head_boxes = self._decode_head_relative(pred_body_boxes, pred_head_rel)
+        # Decode against the same clipped ROI geometry used for roi_align.
+        body_xyxy_norm = body_xyxy_feat.clone()
+        body_xyxy_norm[..., [0, 2]] /= float(feat_w)
+        body_xyxy_norm[..., [1, 3]] /= float(feat_h)
+        bx1, by1, bx2, by2 = body_xyxy_norm.unbind(-1)
+        body_decode_boxes = torch.stack(
+            [
+                0.5 * (bx1 + bx2),
+                0.5 * (by1 + by2),
+                (bx2 - bx1).clamp(min=1e-6),
+                (by2 - by1).clamp(min=1e-6),
+            ],
+            dim=-1,
+        ).clamp(0.0, 1.0)
+        pred_head_boxes = self._decode_head_relative(body_decode_boxes, pred_head_rel)
 
         return {
             "pred_logits": pred_logits,
