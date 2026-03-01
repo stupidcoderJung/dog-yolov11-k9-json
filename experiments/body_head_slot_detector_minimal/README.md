@@ -8,6 +8,9 @@ with fixed slots and matching.
 - Keep the model minimal and easy to read from `forward`.
 - Predict **body box + head box** per slot.
 - Train with slot matching and no-object supervision.
+- Use a simple split path:
+  - body from global pooled feature
+  - head from per-body ROI feature (tiny head-only backbone)
 
 ## File
 
@@ -35,6 +38,11 @@ Output from model:
 - `pred_logits`: `(B, Q)` objectness logits
 - `pred_body_boxes`: `(B, Q, 4)` normalized `cx,cy,w,h`
 - `pred_head_boxes`: `(B, Q, 4)` normalized `cx,cy,w,h`
+
+Model args:
+
+- `num_queries` (default: `50`)
+- `roi_size` (default: `5`) for ROI head feature size
 
 Target format (list length `B`):
 

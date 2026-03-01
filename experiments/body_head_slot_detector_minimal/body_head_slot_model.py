@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision.ops import roi_align
 
 
 def cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
@@ -129,13 +130,22 @@ class BodyHeadSlotDetector(nn.Module):
       - objectness logit
       - body box (cx, cy, w, h), normalized
       - head box (cx, cy, w, h), normalized
+
+    Design (simple, split body/head paths):
+      1) shared image backbone -> body logits/boxes
+      2) per-body ROI features -> tiny head backbone -> head box
     """
 
-    def __init__(self, num_queries: int = 50):
+    def __init__(self, num_queries: int = 50, roi_size: int = 5):
         super().__init__()
         if num_queries < 1:
             raise ValueError("num_queries must be >= 1")
+        if roi_size < 2:
+            raise ValueError("roi_size must be >= 2")
         self.num_queries = num_queries
+        self.roi_size = roi_size
+
+        # Shared image backbone (for body branch and ROI extraction).
         self.backbone = nn.Sequential(
             nn.Conv2d(3, 32, 3, stride=2, padding=1),
             nn.ReLU(True),
@@ -144,21 +154,105 @@ class BodyHeadSlotDetector(nn.Module):
             nn.Conv2d(64, 128, 3, stride=2, padding=1),
             nn.ReLU(True),
         )
-        self.head = nn.Sequential(
+
+        # Stage 1: body/objectness from global pooled feature.
+        self.body_objectness_head = nn.Sequential(
             nn.Linear(128, 256),
             nn.ReLU(True),
-            nn.Linear(256, num_queries * 9),
+            nn.Linear(256, num_queries),
         )
+        self.body_box_head = nn.Sequential(
+            nn.Linear(128, 256),
+            nn.ReLU(True),
+            nn.Linear(256, num_queries * 4),
+        )
+
+        # Stage 2: tiny head-only backbone on body ROI features.
+        self.head_roi_backbone = nn.Sequential(
+            nn.Conv2d(128, 64, 3, padding=1),
+            nn.ReLU(True),
+            nn.Conv2d(64, 32, 3, padding=1),
+            nn.ReLU(True),
+        )
+        self.head_box_head = nn.Sequential(
+            nn.Linear(32 * roi_size * roi_size, 128),
+            nn.ReLU(True),
+            nn.Linear(128, 4),  # relative cxcywh in body ROI
+        )
+
+    @staticmethod
+    def _decode_head_relative(body_boxes: torch.Tensor, head_relative: torch.Tensor) -> torch.Tensor:
+        """
+        body_boxes: (B, Q, 4) normalized cxcywh
+        head_relative: (B, Q, 4) normalized relative cxcywh in body ROI
+        returns absolute normalized cxcywh
+        """
+        body_xyxy = cxcywh_to_xyxy(body_boxes)
+        body_x1 = body_xyxy[..., 0]
+        body_y1 = body_xyxy[..., 1]
+        body_w = body_boxes[..., 2].clamp(min=1e-4)
+        body_h = body_boxes[..., 3].clamp(min=1e-4)
+
+        rel_cx, rel_cy, rel_w, rel_h = head_relative.unbind(-1)
+        head_cx = body_x1 + rel_cx * body_w
+        head_cy = body_y1 + rel_cy * body_h
+        head_w = rel_w * body_w
+        head_h = rel_h * body_h
+        return torch.stack([head_cx, head_cy, head_w, head_h], dim=-1).clamp(0.0, 1.0)
 
     def forward(self, x: torch.Tensor):
         bsz = x.shape[0]
         feat = self.backbone(x)
         pooled = feat.mean(dim=(2, 3))
-        out = self.head(pooled).view(bsz, self.num_queries, 9)
+
+        # Stage 1: body prediction.
+        pred_logits = self.body_objectness_head(pooled)
+        pred_body_boxes = self.body_box_head(pooled).view(bsz, self.num_queries, 4).sigmoid()
+
+        # Stage 2: head prediction from body ROI features.
+        feat_h, feat_w = feat.shape[2], feat.shape[3]
+        body_xyxy = cxcywh_to_xyxy(pred_body_boxes)
+        body_xyxy_feat = body_xyxy.clone()
+        body_xyxy_feat[..., [0, 2]] *= float(feat_w)
+        body_xyxy_feat[..., [1, 3]] *= float(feat_h)
+        body_xyxy_feat[..., [0, 2]] = body_xyxy_feat[..., [0, 2]].clamp(0.0, float(feat_w))
+        body_xyxy_feat[..., [1, 3]] = body_xyxy_feat[..., [1, 3]].clamp(0.0, float(feat_h))
+
+        roi_batch_idx = (
+            torch.arange(bsz, device=x.device, dtype=torch.float32)
+            .view(bsz, 1, 1)
+            .expand(bsz, self.num_queries, 1)
+        )
+        rois = torch.cat([roi_batch_idx, body_xyxy_feat.float()], dim=-1).reshape(-1, 5)
+        roi_feat = roi_align(
+            feat.float(),
+            rois,
+            output_size=(self.roi_size, self.roi_size),
+            spatial_scale=1.0,
+            aligned=True,
+        ).to(feat.dtype)
+        head_feat = self.head_roi_backbone(roi_feat)
+        pred_head_rel = self.head_box_head(head_feat.flatten(1)).sigmoid().view(bsz, self.num_queries, 4)
+        # Decode against the same clipped ROI geometry used for roi_align.
+        body_xyxy_norm = body_xyxy_feat.clone()
+        body_xyxy_norm[..., [0, 2]] /= float(feat_w)
+        body_xyxy_norm[..., [1, 3]] /= float(feat_h)
+        bx1, by1, bx2, by2 = body_xyxy_norm.unbind(-1)
+        body_decode_boxes = torch.stack(
+            [
+                0.5 * (bx1 + bx2),
+                0.5 * (by1 + by2),
+                (bx2 - bx1).clamp(min=1e-6),
+                (by2 - by1).clamp(min=1e-6),
+            ],
+            dim=-1,
+        ).clamp(0.0, 1.0)
+        pred_head_boxes = self._decode_head_relative(body_decode_boxes, pred_head_rel)
+
         return {
-            "pred_logits": out[..., 0],
-            "pred_body_boxes": out[..., 1:5].sigmoid(),
-            "pred_head_boxes": out[..., 5:9].sigmoid(),
+            "pred_logits": pred_logits,
+            "pred_body_boxes": pred_body_boxes,
+            "pred_head_boxes": pred_head_boxes,
         }
 
 
