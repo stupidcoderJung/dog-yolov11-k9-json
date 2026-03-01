@@ -215,8 +215,8 @@ class BodyHeadSlotDetector(nn.Module):
         body_xyxy_feat = body_xyxy.clone()
         body_xyxy_feat[..., [0, 2]] *= float(feat_w)
         body_xyxy_feat[..., [1, 3]] *= float(feat_h)
-        body_xyxy_feat[..., [0, 2]] = body_xyxy_feat[..., [0, 2]].clamp(0.0, float(feat_w - 1))
-        body_xyxy_feat[..., [1, 3]] = body_xyxy_feat[..., [1, 3]].clamp(0.0, float(feat_h - 1))
+        body_xyxy_feat[..., [0, 2]] = body_xyxy_feat[..., [0, 2]].clamp(0.0, float(feat_w))
+        body_xyxy_feat[..., [1, 3]] = body_xyxy_feat[..., [1, 3]].clamp(0.0, float(feat_h))
 
         roi_batch_idx = (
             torch.arange(bsz, device=x.device, dtype=torch.float32)
