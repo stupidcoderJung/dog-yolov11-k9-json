@@ -125,9 +125,17 @@ class CascadedBodyHeadDetector(nn.Module):
             # Flatten
             roi_feats_flat = roi_feats.flatten(1)  # (Q, 512*7*7)
 
-            # Predict head boxes
-            head_boxes_b = self.head_regressor(roi_feats_flat)  # (Q, 4)
-            head_boxes_b = head_boxes_b.sigmoid()  # Normalize
+            # Predict head boxes in ROI-relative cxcywh, then decode to image-global cxcywh.
+            head_rel = self.head_regressor(roi_feats_flat).sigmoid()  # (Q, 4), relative to each body ROI
+            rel_cx, rel_cy, rel_w, rel_h = head_rel.unbind(-1)
+            body_cx, body_cy, body_w, body_h = body_cxcywh.unbind(-1)
+            body_x1 = body_cx - 0.5 * body_w
+            body_y1 = body_cy - 0.5 * body_h
+            head_cx = body_x1 + rel_cx * body_w
+            head_cy = body_y1 + rel_cy * body_h
+            head_w = rel_w * body_w
+            head_h = rel_h * body_h
+            head_boxes_b = torch.stack([head_cx, head_cy, head_w, head_h], dim=-1).clamp(0.0, 1.0)
 
             head_boxes_list.append(head_boxes_b)
 
