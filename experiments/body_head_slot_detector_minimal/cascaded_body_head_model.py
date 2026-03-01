@@ -11,7 +11,7 @@ Key improvements:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.models as models
+from torchvision.models import ResNet18_Weights, resnet18
 from torchvision.ops import roi_align
 
 
@@ -22,13 +22,14 @@ class CascadedBodyHeadDetector(nn.Module):
     - Stage 2: Detect head boxes within body ROIs
     """
 
-    def __init__(self, num_queries: int = 10, backbone_type: str = 'resnet18'):
+    def __init__(self, num_queries: int = 10, backbone_type: str = 'resnet18', use_pretrained: bool = False):
         super().__init__()
         self.num_queries = num_queries
 
         # Backbone: ResNet18 (pretrained)
         if backbone_type == 'resnet18':
-            resnet = models.resnet18(pretrained=True)
+            weights = ResNet18_Weights.DEFAULT if use_pretrained else None
+            resnet = resnet18(weights=weights)
             # Remove FC layer
             self.backbone = nn.Sequential(*list(resnet.children())[:-2])  # Up to avgpool
             self.feature_dim = 512
@@ -93,7 +94,6 @@ class CascadedBodyHeadDetector(nn.Module):
         # Convert normalized cxcywh to xyxy for roi_align
         # roi_align expects (x1, y1, x2, y2) in original image coordinates
         h_feat, w_feat = feat.shape[2], feat.shape[3]
-        img_h, img_w = x.shape[2], x.shape[3]
 
         head_boxes_list = []
         for b_idx in range(batch_size):
@@ -108,8 +108,9 @@ class CascadedBodyHeadDetector(nn.Module):
             y2 = (cy + h / 2) * h_feat
             body_xyxy = torch.stack([x1, y1, x2, y2], dim=-1)  # (Q, 4)
 
-            # Add batch index for roi_align
-            batch_indices = torch.full((self.num_queries, 1), b_idx, dtype=torch.float32, device=x.device)
+            # Add batch index for roi_align.
+            # We pass a single-image feature map (shape: 1, C, H, W), so ROI batch idx must be 0.
+            batch_indices = torch.zeros((self.num_queries, 1), dtype=torch.float32, device=x.device)
             rois = torch.cat([batch_indices, body_xyxy], dim=1)  # (Q, 5)
 
             # ROI Align
@@ -153,7 +154,10 @@ def cascaded_body_head_loss(
     Same loss as body_head_set_loss but for cascaded model.
     Reuse the existing loss function from body_head_slot_model.
     """
-    from body_head_slot_model import body_head_set_loss
+    try:
+        from .body_head_slot_model import body_head_set_loss
+    except ImportError:
+        from body_head_slot_model import body_head_set_loss
     return body_head_set_loss(
         outputs,
         targets,

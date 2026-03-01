@@ -219,18 +219,18 @@ class BodyHeadSlotDetector(nn.Module):
         body_xyxy_feat[..., [1, 3]] = body_xyxy_feat[..., [1, 3]].clamp(0.0, float(feat_h - 1))
 
         roi_batch_idx = (
-            torch.arange(bsz, device=x.device, dtype=feat.dtype)
+            torch.arange(bsz, device=x.device, dtype=torch.float32)
             .view(bsz, 1, 1)
             .expand(bsz, self.num_queries, 1)
         )
-        rois = torch.cat([roi_batch_idx, body_xyxy_feat], dim=-1).reshape(-1, 5)
+        rois = torch.cat([roi_batch_idx, body_xyxy_feat.float()], dim=-1).reshape(-1, 5)
         roi_feat = roi_align(
-            feat,
+            feat.float(),
             rois,
             output_size=(self.roi_size, self.roi_size),
             spatial_scale=1.0,
             aligned=True,
-        )
+        ).to(feat.dtype)
         head_feat = self.head_roi_backbone(roi_feat)
         pred_head_rel = self.head_box_head(head_feat.flatten(1)).sigmoid().view(bsz, self.num_queries, 4)
         pred_head_boxes = self._decode_head_relative(pred_body_boxes, pred_head_rel)
