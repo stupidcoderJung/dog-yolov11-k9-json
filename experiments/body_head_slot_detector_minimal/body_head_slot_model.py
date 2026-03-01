@@ -196,6 +196,8 @@ def body_head_set_loss(
         raise ValueError("normalize_by must be 'matched' or 'batch'")
     if box_smooth_l1_beta <= 0:
         raise ValueError("box_smooth_l1_beta must be > 0")
+    if obj_pos_weight <= 0:
+        raise ValueError("obj_pos_weight must be > 0")
 
     batch_size, query_count = pred_logits.shape
     if batch_size == 0:
@@ -233,6 +235,11 @@ def body_head_set_loss(
         gt_head = targets[b_idx]["head_boxes"].to(device=pred_head.device, dtype=pred_head.dtype)
         if gt_body.shape[0] != gt_head.shape[0]:
             raise ValueError("body_boxes and head_boxes must have the same number of boxes per image")
+        if gt_body.shape[0] > query_count:
+            raise ValueError(
+                f"gt boxes per image ({gt_body.shape[0]}) exceed query_count ({query_count}); "
+                "increase num_queries or cap per-image GT count"
+            )
 
         if validate_targets or strict_target_check or debug:
             body_stats = cxcywh_stats(gt_body)

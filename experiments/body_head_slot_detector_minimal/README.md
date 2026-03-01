@@ -48,6 +48,11 @@ targets = [
 ]
 ```
 
+Constraint:
+
+- Per image object count `Mi` must satisfy `Mi <= Q` (`Q=num_queries`).
+- If `Mi > Q`, loss raises an error to avoid silent GT dropping.
+
 ## Debug-Friendly Loss
 
 `body_head_set_loss(..., return_details=True)` returns:
