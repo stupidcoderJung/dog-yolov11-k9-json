@@ -15,6 +15,8 @@ with fixed slots and matching.
 ## File
 
 - `body_head_slot_model.py`
+- `cascaded_body_head_model.py`
+- YOLO26 cascade variant: `experiments/yolo26_body_head_cascade_minimal/`
 
 ## Run
 
