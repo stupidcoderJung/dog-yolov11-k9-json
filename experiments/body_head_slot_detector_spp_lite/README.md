@@ -6,6 +6,13 @@ Experimental cascaded body/head slot detector with SPP-Lite body pooling and a c
 
 - `cascaded_body_head_model_spp_lite.py` (single source of truth)
 
+## Compatibility Aliases
+
+To minimize import-path changes, this module also exposes:
+
+- `CascadedBodyHeadDetector` -> `CascadedBodyHeadDetectorSPPLite`
+- `cascaded_body_head_loss` -> `cascaded_body_head_loss_spp_lite`
+
 ## Model Upgrades
 
 - Body branch uses SPP-Lite (`1x1 + 2x2 + 4x4`) instead of GAP only.

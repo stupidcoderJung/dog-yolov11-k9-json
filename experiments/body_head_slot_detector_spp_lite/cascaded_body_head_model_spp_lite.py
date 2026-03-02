@@ -47,6 +47,18 @@ RECOMMENDED_CURRICULUM = {
     "curriculum_power": 1.0,
 }
 
+__all__ = [
+    "CascadedBodyHeadDetectorSPPLite",
+    "CascadedBodyHeadDetector",
+    "body_head_set_loss_spp_lite",
+    "body_head_set_loss_with_curriculum",
+    "cascaded_body_head_loss_spp_lite",
+    "cascaded_body_head_loss",
+    "infer_slots",
+    "RECOMMENDED_MATCH_EXTRAS",
+    "RECOMMENDED_CURRICULUM",
+]
+
 
 def cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
     cx, cy, w, h = boxes.unbind(-1)
@@ -336,6 +348,10 @@ class CascadedBodyHeadDetectorSPPLite(nn.Module):
             "pred_body_boxes": pred_body_boxes,
             "pred_head_boxes": pred_head_boxes,
         }
+
+
+# Backward-compatible class alias.
+CascadedBodyHeadDetector = CascadedBodyHeadDetectorSPPLite
 
 
 @torch.no_grad()
@@ -682,6 +698,10 @@ def body_head_set_loss_with_curriculum(
 
 def cascaded_body_head_loss_spp_lite(outputs, targets, **kwargs):
     return body_head_set_loss_spp_lite(outputs, targets, **kwargs)
+
+
+# Backward-compatible loss alias.
+cascaded_body_head_loss = cascaded_body_head_loss_spp_lite
 
 
 @torch.no_grad()
