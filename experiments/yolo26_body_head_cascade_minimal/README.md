@@ -41,5 +41,8 @@ Main outputs:
 ## Notes
 
 - Class filtering is strict by default (`strict_class_filter=True`).
+- With strict mode, stage-2 requires explicit head class selection:
+  - set `head_class_id`, or
+  - set `head_class_name`.
 - To avoid Ultralytics tensor-shape errors, input size and crop size should
   be divisible by `stride_multiple` (default `32`).

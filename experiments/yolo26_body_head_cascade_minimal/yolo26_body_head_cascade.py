@@ -113,6 +113,12 @@ class YOLO26BodyHeadCascade(nn.Module):
         self.stride_multiple = stride_multiple
         self.enforce_stride_multiple = enforce_stride_multiple
 
+        if self.strict_class_filter and head_class_id is None and head_class_name is None:
+            raise ValueError(
+                "head_class_id or head_class_name must be provided when strict_class_filter=True. "
+                "This prevents stage-2 from accepting arbitrary classes as head detections."
+            )
+
         self.body_detector = self._build_detector(body_model)
         self.head_detector = self._build_detector(head_model)
 
